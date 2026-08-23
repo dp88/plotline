@@ -1,0 +1,22 @@
+[package]
+name = "plotline"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["David Palmer"]
+description = "Engine-independent sequences with branching, subroutines, and external waits"
+repository = "https://github.com/dp88/plotline"
+license = "MIT OR Apache-2.0"
+keywords = ["sequence", "dialogue", "quest", "scripting", "gamedev"]
+categories = ["game-development", "data-structures"]
+readme = "README.md"
+exclude = [".github/", "scripts/"]
+
+[dependencies]
+log = "0.4"
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
