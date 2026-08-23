@@ -24,74 +24,11 @@ plotline owns order, branches, calls, and waits. The host defines the steps.
 
 ## What it does not do
 
-**No clock.** A step that cannot finish returns a [`Completion`] handle. The host signals
-the handle and calls `advance()`. The crate does not define timed waits.
+**No clock.** A step that needs to wait returns `Progress::Wait` with a [`Completion`] handle.
+The host signals the handle and calls `advance()`. A multi-phase step can instead return
+`Progress::Resume` and manage its own per-run state. The crate does not define timed waits.
 
 **No engine or runtime dependencies.** The crate uses `alloc` and supports `no_std`.
-
-## API reference
-
-The public API has data types, execution traits, and built-in steps.
-
-### Data types
-
-| Type | Description | Main operations |
-| --- | --- | --- |
-| `Completion` | Thread-safe, one-shot wait handle. | `new`, `done`, `signal`, `is_complete` |
-| `TypeMap` | One host value per Rust type. | `insert`, `get`, `get_mut`, `remove` |
-| `ChainFlags` | Boolean flags shared by one chain. | `flag`, `set_flag` |
-| `Context` | Services and chain state for one step. | `services`, `flags`, `eval`, `enact`, `note` |
-| `QueryCtx` | Read-only context for a condition. | `target`, `chain`, `caps` |
-| `EffectCtx` | Mutable context for an effect. | `target`, `chain`, `caps` |
-| `SequenceRef` | Opaque sequence handle. | `from_raw`, `to_raw` |
-| `Sequence` | Ordered list of shared steps. | `new`, `with_step`, `push`, `iter` |
-| `Iter` | Iterator over sequence steps. | `Iterator`, `ExactSizeIterator` |
-| `Library` | Owns sequences and their handles. | `insert`, `get`, `get_mut`, `iter` |
-| `RunnerConfig` | Limits for recursion, hops, resumes, and events. | Chainable limit setters |
-| `Runner` | Executes one sequence chain at a time. | `start`, `advance`, `stop`, `current`, `drain_events` |
-| `RunnerEvent` | Diagnostic event emitted by the runner. | `StepStarted`, `StepFailed`, `StepSkipped`, `SequenceMissing`, `Note` |
-| `ChainGuard` | Host value held while a chain runs. | Dropped when the chain ends |
-| `Outcome` | Result returned by `Runner::advance`. | `Idle`, `Finished`, `Aborted` |
-| `AbortReason` | Reason for a guarded abort. | `HopLimit`, `ResumeLimit`, `CallDepth` |
-| `SkipReason` | Reason a step was skipped. | `Disabled`, `Missing`, `Vanished` |
-| `StartError` | Reason `Runner::start` failed. | `AlreadyRunning` |
-| `Flow` | Declared continuation after a step. | `Continue`, `End` |
-| `Progress` | Result of one step call. | `Done`, `Wait`, `Call`, `Goto`, `Resume` |
-| `StepFacts` | Snapshot used by analysis and tools. | `of` |
-| `RailShape` | Shape for a flow-analysis node. | `Circle`, `Diamond` |
-| `RailNode` | Display data for one analysed step. | `shape`, `solid`, `terminal`, `severed`, `soften_below` |
-| `FlowModel` | Reachability analysis for one sequence. | `analyse`, terminal and warning queries |
-
-### Traits
-
-| Trait | Purpose | Required operation |
-| --- | --- | --- |
-| `Step` | Defines one host operation. | `summary`, `start` |
-| `StepRun` | Stores state for a multi-phase step. | `resume` |
-| `IntoProgress` | Converts closure results to `Progress`. | `into_progress` |
-| `Condition` | Reads state and returns a Boolean answer. | `summary`, `evaluate` |
-| `Effect` | Performs one immediate state change. | `summary`, `apply` |
-| `SequenceFacts` | Supplies sequence data to analysis. | `step_count`, `step_facts`, `name` |
-| `SequenceSource` | Supplies sequence data and starts steps. | `start_step` |
-
-### Built-ins
-
-Use the modules by name:
-
-- `conditions`: `Always`, `Not`, `All`, `Any`, and `Flag`.
-- `effects`: `SetFlag`.
-- `steps`: `Note`, `SetFlag`, `Branch`, `Call`, `Stop`, `ApplyEffects`, `Run`, and `run`.
-
-`steps::run` wraps a closure. Its body returns `()`, a `Completion`, or `Progress`.
-
-```rust
-# use plotline::{Sequence, steps};
-Sequence::new("greeting")
-    .with_step(steps::run("Greet the elder", |_ctx| println!("Hello.")))
-    .with_step(steps::run("Remember it", |ctx| ctx.set_flag("greeted", true)));
-```
-
-`Condition` and `Effect` connect the host systems. They can be used outside the runner.
 
 ## Example
 
@@ -136,6 +73,93 @@ Run the example:
 ```console
 $ cargo run --example dialog
 ```
+
+## API reference
+
+The public API has data types, execution traits, and built-in steps.
+
+### Data types
+
+#### Sequences
+
+| Type | Description | Main API |
+| --- | --- | --- |
+| `Sequence` | Ordered list of steps. | `new`, `with_step`, `push`, `iter` |
+| `Iter` | Iterator over sequence steps. | `Iterator`, `ExactSizeIterator` |
+| `Library` | Owns sequences and creates their handles. | `insert`, `get`, `get_mut`, `iter` |
+| `SequenceRef` | Opaque sequence handle. | `from_raw`, `to_raw` |
+
+#### Step execution
+
+| Type | Description | Main API |
+| --- | --- | --- |
+| `Flow` | Declared continuation after a step. | `Continue`, `End` |
+| `Progress` | Result of starting or resuming one step. | `Done`, `Wait`, `Call`, `Goto`, `Resume` |
+| `Completion` | Thread-safe, one-shot wait handle. | `new`, `done`, `signal`, `is_complete` |
+| `StepFacts` | Snapshot used by analysis, editors, and tools. | `of` |
+
+#### Context & state
+
+| Type | Description | Main API |
+| --- | --- | --- |
+| `Context` | Services, chain state, and location for one step. | `services`, `services_mut`, `flags`, `flags_mut`, `flag`, `set_flag`, `eval`, `enact`, `note`, `location`, `instigator`, `instigator_as` |
+| `TypeMap` | One host value per concrete `'static` type. | `insert`, `get`, `get_mut`, `remove` |
+| `ChainFlags` | Boolean flags shared by one chain. | `flag`, `set_flag` |
+| `QueryCtx` | Read-only context for a condition. | `target`, `chain`, `caps` |
+| `EffectCtx` | Mutable context for an effect. | `target`, `chain`, `caps` |
+
+#### Runner
+
+| Type | Description | Main API |
+| --- | --- | --- |
+| `Runner` | Executes one sequence chain at a time. | `start`, `advance`, `stop`, `current`, `drain_events` |
+| `RunnerConfig` | Limits for call depth, hops, resumes, and events. | Chainable limit setters |
+| `RunnerEvent` | Diagnostic event emitted by the runner. | `StepStarted`, `StepFailed`, `StepSkipped`, `SequenceMissing`, `Note` |
+| `ChainGuard` | Type alias for a host value held while a chain runs. | Dropped when the chain ends |
+| `Outcome` | Result returned by `Runner::advance`. | `Idle`, `Finished`, `Aborted` |
+| `AbortReason` | Reason for a guarded abort. | `HopLimit`, `ResumeLimit`, `CallDepth` |
+| `SkipReason` | Reason a step was skipped. | `Disabled`, `Missing`, `Vanished` |
+| `StartError` | Reason `Runner::start` failed. | `AlreadyRunning` |
+
+#### Analysis
+
+| Type | Description | Main API |
+| --- | --- | --- |
+| `FlowModel` | Reachability analysis for one sequence. | `analyse`, terminal and warning queries |
+| `RailNode` | Display data for one analysed step. | `shape`, `solid`, `terminal`, `severed`, `soften_below` |
+| `RailShape` | Shape for a flow-analysis node. | `Circle`, `Diamond` |
+
+### Traits
+
+| Trait | Purpose | Required operation |
+| --- | --- | --- |
+| `Step` | Defines one host operation. | `summary`, `start` |
+| `StepRun` | Stores per-run state for a multi-phase step. | `resume` |
+| `IntoProgress` | Converts closure results to `Progress`. | `into_progress` |
+| `Condition` | Reads state and returns a Boolean answer. | `summary`, `evaluate` |
+| `Effect` | Applies one effect in one call. | `summary`, `apply` |
+| `SequenceFacts` | Supplies sequence facts to analysis, editors, and tools. | `step_count`, `step_facts`, `name` |
+| `SequenceSource` | Supplies sequence data and starts steps. | `start_step` |
+
+### Built-ins
+
+Use the modules by name:
+
+- `conditions`: `Always`, `Not`, `All`, `Any`, and `Flag`.
+- `effects`: `SetFlag`.
+- `steps`: `Note`, `SetFlag`, `Branch`, `Call`, `Stop`, `ApplyEffects`, `Run`, and `run`.
+
+`steps::run` wraps a closure. Its body can return `()`, a `Completion`, or `Progress`; other
+return types are also supported when they implement [`IntoProgress`].
+
+```rust
+# use plotline::{Sequence, steps};
+Sequence::new("greeting")
+    .with_step(steps::run("Greet the elder", |_ctx| println!("Hello.")))
+    .with_step(steps::run("Remember it", |ctx| ctx.set_flag("greeted", true)));
+```
+
+`Condition` and `Effect` connect the host systems. They can be used outside the runner.
 
 Run `cargo doc --open` for the API.
 
