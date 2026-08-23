@@ -3,10 +3,7 @@
 [![CI](https://github.com/dp88/plotline/actions/workflows/ci.yml/badge.svg)](https://github.com/dp88/plotline/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-Branching sequences of events, as plain data. For dialog trees, quests, cutscenes, and
-anything else that is "this, then this, then — depending on the answer — that".
-
-I wrote it to stop hand-rolling a dialog tree every time I hack on a game.
+Branching sequences of events as plain data. Use it for dialog, quests, and cutscenes.
 
 ## What it does
 
@@ -23,42 +20,69 @@ ring_found:  remove item "gold ring"
              say "You have my thanks."
 ```
 
-plotline owns the *shape* — the order, the branches, the subroutine calls, the waiting.
-Your game owns the *verbs*. "Say a line", "remove an item", "advance a quest" are steps
-you write, and plotline never learns what they mean.
+plotline owns order, branches, calls, and waits. The host defines the steps.
 
 ## What it does not do
 
-**It has no clock.** No frames, no delta time, no `async`. A step that cannot finish now
-returns a [`Completion`] handle, and something outside the crate — a dialog panel, an
-animation, a timer your engine owns — signals it. You call `advance()` whenever that may
-have happened. Between calls the runner is inert data.
+**No clock.** A step that cannot finish returns a [`Completion`] handle. The host signals
+the handle and calls `advance()`. The crate does not define timed waits.
 
-That is why there is no "wait 2 seconds" step built in: seconds belong to whoever owns the
-clock. The same crate runs under a game loop, a CLI, and a unit test without knowing which.
+**No engine or runtime dependencies.** The crate uses `alloc` and supports `no_std`.
 
-**It has no engine, and no dependencies.** Zero. It is `no_std` too — `#![no_std]` plus
-`alloc`, verified by cross-compiling to bare-metal ARM in CI.
+## API reference
 
-## The API in one screen
+The public API has data types, execution traits, and built-in steps.
 
-| Type | What it is |
-| --- | --- |
-| `Sequence` | An ordered list of steps. A value: build it, iterate it, analyse it. |
-| `Library` | Owns sequences and mints the `SequenceRef` handles they use to link to each other. |
-| `Runner` | Walks a sequence, its branches, and its subroutines. Holds all run state. |
-| `Step` | Your verb. `summary()` and `start()` — that is the whole contract. |
-| `Condition` / `Effect` | Ask the world a yes/no question; act on the world instantly. |
-| `Completion` | The one wait primitive. One-shot, idempotent, safe to signal from any thread. |
-| `FlowModel` | Reachability analysis: which steps can run, where a sequence certainly ends. |
+### Data types
 
-Built-ins live in `steps`, `conditions`, and `effects` — `steps::Branch`, `steps::Call`,
-`conditions::Flag`, `effects::SetFlag`, and a handful more.
+| Type | Description | Main operations |
+| --- | --- | --- |
+| `Completion` | Thread-safe, one-shot wait handle. | `new`, `done`, `signal`, `is_complete` |
+| `TypeMap` | One host value per Rust type. | `insert`, `get`, `get_mut`, `remove` |
+| `ChainFlags` | Boolean flags shared by one chain. | `flag`, `set_flag` |
+| `Context` | Services and chain state for one step. | `services`, `flags`, `eval`, `enact`, `note` |
+| `QueryCtx` | Read-only context for a condition. | `target`, `chain`, `caps` |
+| `EffectCtx` | Mutable context for an effect. | `target`, `chain`, `caps` |
+| `SequenceRef` | Opaque sequence handle. | `from_raw`, `to_raw` |
+| `Sequence` | Ordered list of shared steps. | `new`, `with_step`, `push`, `iter` |
+| `Iter` | Iterator over sequence steps. | `Iterator`, `ExactSizeIterator` |
+| `Library` | Owns sequences and their handles. | `insert`, `get`, `get_mut`, `iter` |
+| `RunnerConfig` | Limits for recursion, hops, resumes, and events. | Chainable limit setters |
+| `Runner` | Executes one sequence chain at a time. | `start`, `advance`, `stop`, `current`, `drain_events` |
+| `RunnerEvent` | Diagnostic event emitted by the runner. | `StepStarted`, `StepFailed`, `StepSkipped`, `SequenceMissing`, `Note` |
+| `ChainGuard` | Host value held while a chain runs. | Dropped when the chain ends |
+| `Outcome` | Result returned by `Runner::advance`. | `Idle`, `Finished`, `Aborted` |
+| `AbortReason` | Reason for a guarded abort. | `HopLimit`, `ResumeLimit`, `CallDepth` |
+| `SkipReason` | Reason a step was skipped. | `Disabled`, `Missing`, `Vanished` |
+| `StartError` | Reason `Runner::start` failed. | `AlreadyRunning` |
+| `Flow` | Declared continuation after a step. | `Continue`, `End` |
+| `Progress` | Result of one step call. | `Done`, `Wait`, `Call`, `Goto`, `Resume` |
+| `StepFacts` | Snapshot used by analysis and tools. | `of` |
+| `RailShape` | Shape for a flow-analysis node. | `Circle`, `Diamond` |
+| `RailNode` | Display data for one analysed step. | `shape`, `solid`, `terminal`, `severed`, `soften_below` |
+| `FlowModel` | Reachability analysis for one sequence. | `analyse`, terminal and warning queries |
 
-**A step is usually a closure.** `steps::run` takes a name and a body, and the body
-answers with whatever fits: nothing at all to finish now, a `Completion` to wait on, or a
-`Progress` when it needs control flow. Writing a `struct` and an `impl` block is for steps
-that carry authored data.
+### Traits
+
+| Trait | Purpose | Required operation |
+| --- | --- | --- |
+| `Step` | Defines one host operation. | `summary`, `start` |
+| `StepRun` | Stores state for a multi-phase step. | `resume` |
+| `IntoProgress` | Converts closure results to `Progress`. | `into_progress` |
+| `Condition` | Reads state and returns a Boolean answer. | `summary`, `evaluate` |
+| `Effect` | Performs one immediate state change. | `summary`, `apply` |
+| `SequenceFacts` | Supplies sequence data to analysis. | `step_count`, `step_facts`, `name` |
+| `SequenceSource` | Supplies sequence data and starts steps. | `start_step` |
+
+### Built-ins
+
+Use the modules by name:
+
+- `conditions`: `Always`, `Not`, `All`, `Any`, and `Flag`.
+- `effects`: `SetFlag`.
+- `steps`: `Note`, `SetFlag`, `Branch`, `Call`, `Stop`, `ApplyEffects`, `Run`, and `run`.
+
+`steps::run` wraps a closure. Its body returns `()`, a `Completion`, or `Progress`.
 
 ```rust
 # use plotline::{Sequence, steps};
@@ -67,10 +91,7 @@ Sequence::new("greeting")
     .with_step(steps::run("Remember it", |ctx| ctx.set_flag("greeted", true)));
 ```
 
-`Condition` and `Effect` are the seam between systems, not the runner. A quest system
-contributes "quest is at stage 3"; an inventory contributes "has item". A branch step uses
-them, and so does a dialog choice, a trigger volume, and an item's use handler — none of
-which know the runner exists.
+`Condition` and `Effect` connect the host systems. They can be used outside the runner.
 
 ## Example
 
@@ -78,8 +99,6 @@ which know the runner exists.
 use core::task::Poll;
 use plotline::{Completion, Library, Outcome, Runner, Sequence, TypeMap, steps};
 
-// Something outside signals this: a dialog panel, an animation, a timer your
-// engine owns. From plotline's point of view they all look the same.
 let ready = Completion::new();
 let waiting_on = ready.clone();
 
@@ -91,7 +110,6 @@ let farewell = library.insert(
 let greeting = library.insert(
     Sequence::new("greeting")
         .with_step(steps::run("Say hello", |_ctx| println!("Hello, traveler.")))
-        // Returning a Completion means "wait on this". No `Progress` in sight.
         .with_step(steps::run("Wait for the world", move |_ctx| waiting_on.clone()))
         .with_step(steps::Branch {
             condition: None,
@@ -104,10 +122,8 @@ let mut runner = Runner::default();
 let mut services = TypeMap::new();
 runner.start(greeting, None).unwrap();
 
-// The chain holds at the wait...
 assert_eq!(runner.advance(&mut library, &mut services), Poll::Pending);
 
-// ...until the world signals — from wherever, whenever "the world" is.
 ready.signal();
 assert_eq!(
     runner.advance(&mut library, &mut services),
@@ -115,53 +131,33 @@ assert_eq!(
 );
 ```
 
-There is a runnable version of the conversation at the top of this file in
-[`examples/dialog.rs`](examples/dialog.rs) — cycles, services, and all:
+Run the example:
 
 ```console
 $ cargo run --example dialog
 ```
 
-Run `cargo doc --open` for the rest. Every public item is documented.
+Run `cargo doc --open` for the API.
 
 ## Diagnostics
 
-The crate owns no logger, which is why it has no dependencies. The runner reports what it
-did as events, and you forward them wherever you like:
+The runner reports events. The host decides how to log them:
 
 ```rust
 # use plotline::Runner;
 # let mut runner = Runner::default();
 for event in runner.drain_events() {
-    println!("{event:?}"); // or log::info!, or tracing::event!
+    println!("{event:?}");
 }
 ```
 
-Steps say things with `ctx.note(..)`, tagged with where they said it. The catch is real:
-a host that never drains sees nothing.
+`ctx.note(..)` adds location-tagged notes.
 
 ## Requirements
 
 - Rust 1.85 or later (edition 2024).
-- **`panic = "unwind"`, if you want panic isolation.** With the default `std` feature the
-  runner catches a panicking step, reports it, and carries on. That needs an unwinder, so
-  `panic = "abort"` turns the isolation into process death.
-- `--no-default-features` gives you the `no_std` build. It makes the same bargain as
-  `panic = "abort"`: no isolation, because bare metal has no unwinder to offer.
-
-## Status and honesty
-
-Version 0.1. The API will move.
-
-Two things you should know before you depend on this:
-
-- **It is AI-assisted code.** I directed the design and reviewed the result, but I did not
-  type most of it.
-- **I am a professional developer and a Rust novice.** The design I stand behind. The
-  idiom may well be off, and there are almost certainly Rust things I did wrong.
-
-Both are reasons to read the source before you trust it — and reasons an issue or a PR is
-genuinely welcome. It is a small crate: about 4,000 lines including tests.
+- **`panic = "unwind"`** is required for panic isolation with the default `std` feature.
+- `--no-default-features` builds without `std` and does not catch panics.
 
 ## License
 

@@ -1,8 +1,4 @@
-//! Built-in effects. Use them module-qualified — `effects::SetFlag`.
-//!
-//! An effect runs far outside the runner — an item being used, a dialog choice, a trigger
-//! volume — so it has no event stream to speak into. An effect reports authoring problems
-//! through [`warning`](crate::Effect::warning) and otherwise stays quiet.
+//! Built-in effects.
 
 use alloc::borrow::ToOwned;
 use alloc::format;
@@ -10,16 +6,12 @@ use alloc::string::String;
 
 use crate::vocab::{Effect, EffectCtx};
 
-/// Sets a chain-local blackboard flag — the interlock that lets a dialog choice steer the
-/// sequence that ran it.
-///
-/// Fired outside a running chain there is nothing to write to, so it does nothing — the
-/// house rule for a missing requirement.
+/// Sets a chain flag. Outside a chain, it does nothing.
 #[derive(Clone, Debug)]
 pub struct SetFlag {
-    /// The flag to set.
+    /// Flag name.
     pub name: String,
-    /// The value to set it to.
+    /// Value to set.
     pub value: bool,
 }
 
@@ -45,9 +37,6 @@ impl Effect for SetFlag {
     }
 
     fn apply(&self, effect_ctx: &mut EffectCtx<'_>) {
-        // No chain, nothing to write to. The `Option` on `EffectCtx::chain` is what makes
-        // a caller acknowledge that; doing nothing is the house rule for a missing
-        // requirement.
         if let Some(chain) = effect_ctx.chain.as_deref_mut() {
             chain.set_flag(self.name.clone(), self.value);
         }
@@ -79,7 +68,6 @@ mod tests {
     #[test]
     fn set_flag_outside_a_chain_is_a_warned_no_op() {
         let mut caps = TypeMap::new();
-        // No chain on offer: must not panic, must not invent one.
         SetFlag {
             name: "accepted".into(),
             value: true,

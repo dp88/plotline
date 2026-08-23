@@ -1,9 +1,4 @@
-//! The machine that walks sequences: a flat trampoline with guards.
-//!
-//! The runner is **time-free**. It has no clock, no frames, no dt — the host calls
-//! [`advance`](Runner::advance) whenever something may have changed (a game loop once per
-//! frame, a test right after signaling a [`Completion`](crate::Completion)), and between
-//! calls the runner is inert data. It does not know whether its host is realtime.
+//! The sequence runner.
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -19,18 +14,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// The payload a panicking step left behind.
 type Panic = Box<dyn Any + Send>;
 
-/// Runs a step body, catching a panic where the platform can.
-///
-/// Without `std` there is no unwinder, so the panic propagates and kills the process —
-/// exactly what `panic = "abort"` does to the `std` build.
+/// Runs a body with optional panic isolation.
 #[cfg(feature = "std")]
 fn isolate<T>(body: impl FnOnce() -> T) -> Result<T, Panic> {
     catch_unwind(AssertUnwindSafe(body))
 }
 
 #[cfg(not(feature = "std"))]
-// The Result is always Ok here, and it must be: the two shapes have to match so the
-// runner's call sites do not care which one they got.
 #[allow(clippy::unnecessary_wraps)]
 fn isolate<T>(body: impl FnOnce() -> T) -> Result<T, Panic> {
     Ok(body())
@@ -42,37 +32,17 @@ use core::task::Poll;
 
 use crate::step::{Progress, StepRun};
 
-/// Tunables for the runner's guards.
-///
-/// Build one from [`Default`] and adjust with the chainable setters, which is shorter
-/// than a struct literal and survives new fields being added:
-///
-/// ```
-/// use plotline::RunnerConfig;
-///
-/// let config = RunnerConfig::default().max_call_depth(8).max_hops_per_advance(16);
-/// assert_eq!(config.max_call_depth, 8);
-/// ```
+/// Limits for one runner.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct RunnerConfig {
-    /// Maximum simultaneously active sequences in one chain — the base sequence plus
-    /// nested [`Call`](Progress::Call)s. Exceeding it is a subroutine chain that includes
-    /// itself: the chain aborts with [`AbortReason::CallDepth`].
+    /// Maximum active sequence frames.
     pub max_call_depth: u32,
-    /// Maximum trampoline hops (branch transitions between sequences) within a single
-    /// [`advance`](Runner::advance). Exceeding it is an authored loop with no blocking
-    /// step: the chain aborts.
+    /// Maximum sequence hops per [`Runner::advance`].
     pub max_hops_per_advance: u32,
-    /// Maximum times one step's [`StepRun`] is resumed within a single
-    /// [`advance`](Runner::advance). Exceeding it is a state machine that never reports
-    /// [`Progress::Done`] — it answers [`Resume`](Progress::Resume), or
-    /// [`Wait`](Progress::Wait) on an already-signaled handle, forever. Without this the
-    /// host thread would spin inside `advance` and never return.
+    /// Maximum resumes per [`Runner::advance`].
     pub max_resumes_per_advance: u32,
-    /// Maximum [`RunnerEvent`]s buffered for [`drain_events`](Runner::drain_events).
-    /// A host that never drains would otherwise grow the buffer for the life of the
-    /// process; past this, the oldest events are dropped.
+    /// Maximum buffered [`RunnerEvent`] values.
     pub max_buffered_events: usize,
 }
 
@@ -88,28 +58,28 @@ impl Default for RunnerConfig {
 }
 
 impl RunnerConfig {
-    /// Sets [`max_call_depth`](RunnerConfig::max_call_depth).
+    /// Sets [`RunnerConfig::max_call_depth`].
     #[must_use]
     pub const fn max_call_depth(mut self, frames: u32) -> Self {
         self.max_call_depth = frames;
         self
     }
 
-    /// Sets [`max_hops_per_advance`](RunnerConfig::max_hops_per_advance).
+    /// Sets [`RunnerConfig::max_hops_per_advance`].
     #[must_use]
     pub const fn max_hops_per_advance(mut self, hops: u32) -> Self {
         self.max_hops_per_advance = hops;
         self
     }
 
-    /// Sets [`max_resumes_per_advance`](RunnerConfig::max_resumes_per_advance).
+    /// Sets [`RunnerConfig::max_resumes_per_advance`].
     #[must_use]
     pub const fn max_resumes_per_advance(mut self, resumes: u32) -> Self {
         self.max_resumes_per_advance = resumes;
         self
     }
 
-    /// Sets [`max_buffered_events`](RunnerConfig::max_buffered_events).
+    /// Sets [`RunnerConfig::max_buffered_events`].
     #[must_use]
     pub const fn max_buffered_events(mut self, events: usize) -> Self {
         self.max_buffered_events = events;
@@ -117,116 +87,88 @@ impl RunnerConfig {
     }
 }
 
-/// How a chain ended. Carried by [`Poll::Ready`] from [`advance`](Runner::advance);
-/// a chain still in flight is [`Poll::Pending`].
+/// Result of [`Runner::advance`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Outcome {
-    /// No chain was running.
+    /// No chain was active.
     Idle,
-    /// The chain ran out of steps and is over. The [`ChainGuard`] was dropped before
-    /// this was returned.
+    /// The chain finished.
     Finished,
-    /// A guard killed the chain. The [`ChainGuard`] was dropped before this was
-    /// returned.
+    /// A guard stopped the chain.
     Aborted(AbortReason),
 }
 
-/// Why a chain was aborted. External [`stop`](Runner::stop) is reported by that call
-/// itself, not through here.
+/// Why a chain was aborted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AbortReason {
-    /// The per-advance trampoline hop guard fired: an authored loop with no blocking
-    /// step.
+    /// The hop limit was reached.
     HopLimit,
-    /// The per-advance resume guard fired: a step's [`StepRun`] never reported
-    /// [`Progress::Done`].
+    /// The resume limit was reached.
     ResumeLimit,
-    /// The nesting guard fired: a subroutine chain that includes itself.
+    /// The call-depth limit was reached.
     CallDepth,
 }
 
-/// Why the runner passed over a step.
+/// Why a step was skipped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SkipReason {
-    /// The step reported itself disabled.
+    /// The step was disabled.
     Disabled,
-    /// The source had no step at that index — a null slot left by a renamed type.
+    /// The source had no step at the index.
     Missing,
-    /// The step described itself, then was gone when the runner went to run it.
+    /// The step was removed after inspection.
     Vanished,
 }
 
-/// Something that happened during an [`advance`](Runner::advance).
-///
-/// This is the crate's whole diagnostic channel: sequences are data, so the event stream
-/// is the debugger. Nothing here reaches a logger by itself — drain it with
-/// [`Runner::drain_events`] and forward it wherever you like.
-///
-/// ```
-/// # use plotline::{Library, Runner, Sequence, steps};
-/// # let mut library = Library::new();
-/// # let s = library.insert(Sequence::new("s").with_step(steps::run("x", |_| {})));
-/// # let mut runner = Runner::default();
-/// # let mut services = plotline::TypeMap::new();
-/// # runner.start(s, None).unwrap();
-/// # runner.advance(&mut library, &mut services);
-/// for event in runner.drain_events() {
-///     println!("{event:?}"); // or log::info!, or tracing::event!
-/// }
-/// ```
-///
-/// A host that never drains loses the oldest events once the buffer is full, and sees
-/// nothing at all if it never looks. That is the trade for owning no logger.
+/// Diagnostic event emitted by the runner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunnerEvent {
-    /// An enabled step began executing.
+    /// An enabled step started.
     StepStarted {
-        /// The sequence the step belongs to.
+        /// Sequence handle.
         sequence: SequenceRef,
-        /// The step's index within that sequence.
+        /// Step index.
         index: usize,
     },
-    /// A step panicked; it was skipped, and the chain continued. Whatever that step was
-    /// mid-way through may be half-done.
+    /// A step panicked and was skipped.
     StepFailed {
-        /// The sequence the step belongs to.
+        /// Sequence handle.
         sequence: SequenceRef,
-        /// The step's index within that sequence.
+        /// Step index.
         index: usize,
-        /// The panic payload, when it was a string.
+        /// Panic message.
         reason: String,
     },
-    /// A step was passed over.
+    /// A step was skipped.
     StepSkipped {
-        /// The sequence the step belongs to.
+        /// Sequence handle.
         sequence: SequenceRef,
-        /// The step's index within that sequence.
+        /// Step index.
         index: usize,
-        /// Why it was passed over.
+        /// Skip reason.
         why: SkipReason,
     },
-    /// A sequence handle did not resolve against the source, so the runner ended it.
+    /// A sequence handle did not resolve.
     SequenceMissing {
-        /// The handle that did not resolve.
+        /// Missing handle.
         sequence: SequenceRef,
     },
-    /// A step said something, through [`Context::note`](crate::Context::note).
+    /// A step emitted a note.
     Note {
-        /// The sequence the step belongs to.
+        /// Sequence handle.
         sequence: SequenceRef,
-        /// The step's index within that sequence.
+        /// Step index.
         index: usize,
-        /// What it said.
+        /// Note text.
         message: String,
     },
 }
 
-/// The runner's bounded event buffer. Steps reach it through
-/// [`Context::note`](crate::Context::note).
+/// Bounded event buffer.
 #[derive(Debug, Default)]
 pub(crate) struct Events {
     queue: VecDeque<RunnerEvent>,
@@ -234,7 +176,7 @@ pub(crate) struct Events {
 }
 
 impl Events {
-    /// Records an event, dropping the oldest when the buffer is full.
+    /// Records an event.
     pub(crate) fn record(&mut self, event: RunnerEvent) {
         if self.queue.len() >= self.cap {
             self.queue.pop_front();
@@ -243,12 +185,11 @@ impl Events {
     }
 }
 
-/// Why [`Runner::start`] refused.
+/// Why [`Runner::start`] failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StartError {
-    /// A chain is already in flight. Sequences are atomic, and the second request is a
-    /// content bug, not a queue — the refusal is logged loudly.
+    /// A chain is already active.
     AlreadyRunning,
 }
 
@@ -262,74 +203,56 @@ impl core::fmt::Display for StartError {
 
 impl core::error::Error for StartError {}
 
-/// An opaque hold the host acquires for the life of a chain — the save-gate seam.
-///
-/// The embedder installs a factory with [`Runner::set_guard_factory`]; the runner
-/// acquires one guard per chain and **drops it on every completion path** — finish,
-/// abort, external stop — *before* the completion is reported, so a listener that saves
-/// the moment a conversation ends finds the gate already open. `Drop` is the release,
-/// which is what makes the hold unstrandable.
+/// Host-owned value held for the life of a chain.
 pub type ChainGuard = Box<dyn Any>;
 
-/// One active sequence within a chain: which sequence, which step, and the step's
-/// in-flight state machine when it has one.
 struct Frame {
     sequence: SequenceRef,
     index: usize,
     run: Option<Box<dyn StepRun>>,
 }
 
-/// Everything one chain owns while in flight.
+impl Frame {
+    fn new(sequence: SequenceRef) -> Self {
+        Self {
+            sequence,
+            index: 0,
+            run: None,
+        }
+    }
+
+    fn next(&mut self) {
+        self.run = None;
+        self.index += 1;
+    }
+}
+
 struct Chain {
     state: ChainState,
-    /// Bottom frame is the trampoline's current sequence; frames above it are nested
-    /// [`Progress::Call`] subroutines. All frames share the one [`ChainState`], which is
-    /// why a nested stop or branch ends the caller too.
     frames: Vec<Frame>,
     pending: Option<crate::Completion>,
     guard: Option<ChainGuard>,
 }
 
-/// What the trampoline should do after a step reported its progress.
-enum Applied {
-    /// Keep driving.
-    Continue,
-    /// Stop here and report this.
-    Terminate(Drive),
-}
-
-/// Internal outcome of driving a chain as far as it will go.
 enum Drive {
     Blocked,
     Finished,
     Aborted(AbortReason),
 }
 
-/// Walks sequences from a [`SequenceSource`], one chain at a time.
-///
-/// A chain is one press of the "go" button: a sequence, every sequence it branches to,
-/// and every subroutine along the way. The runner owns all run state — the sequences
-/// themselves stay immutable shared data.
-///
-/// A `Runner` is single-threaded: it is neither `Send` nor `Sync`, and neither is a
-/// [`Sequence`](crate::Sequence) or a [`Library`](crate::Library). The one thing that
-/// crosses threads is [`Completion`](crate::Completion), which is the whole point of it —
-/// a worker signals, and the owning thread calls `advance`.
-///
-/// # Examples
+/// Runs one chain at a time.
 ///
 /// ```
 /// use core::task::Poll;
 /// use plotline::{Library, Outcome, Runner, Sequence, TypeMap, steps};
 ///
 /// let mut library = Library::new();
-/// let hello = library.insert(
-///     Sequence::new("hello").with_step(steps::run("Greet", |_ctx| println!("Hi."))),
+/// let sequence = library.insert(
+///     Sequence::new("hello").with_step(steps::run("Greet", |_ctx| {})),
 /// );
-///
 /// let mut runner = Runner::default();
 /// let mut services = TypeMap::new();
-/// runner.start(hello, None).unwrap();
+/// runner.start(sequence, None).unwrap();
 /// assert_eq!(
 ///     runner.advance(&mut library, &mut services),
 ///     Poll::Ready(Outcome::Finished),
@@ -349,7 +272,7 @@ impl Default for Runner {
 }
 
 impl Runner {
-    /// A runner with the given guard tunables and no chain in flight.
+    /// Creates an idle runner with the given limits.
     #[must_use]
     pub fn new(config: RunnerConfig) -> Self {
         Self {
@@ -360,28 +283,21 @@ impl Runner {
         }
     }
 
-    /// Installs the [`ChainGuard`] factory — called once per chain start; the returned
-    /// guard is dropped when the chain ends, however it ends.
+    /// Installs the guard factory.
     pub fn set_guard_factory(&mut self, factory: impl FnMut() -> ChainGuard + 'static) {
         self.guard_factory = Some(Box::new(factory));
     }
 
-    /// The guard tunables, adjustable between (or, harmlessly, during) chains — hosts
-    /// expose them as settings and write them through here.
+    /// Returns mutable runner limits.
     pub fn config_mut(&mut self) -> &mut RunnerConfig {
         &mut self.config
     }
 
-    /// Begins a chain at `sequence`. `instigator` is whatever started it — a trigger, an
-    /// NPC, `None` for scripted starts — and is visible to steps through
-    /// [`Context::instigator`](crate::Context::instigator).
-    ///
-    /// Nothing executes until the first [`advance`](Runner::advance).
+    /// Starts a chain. Execution begins with [`Runner::advance`].
     ///
     /// # Errors
     ///
-    /// [`StartError::AlreadyRunning`] when a chain is in flight; the refusal is also
-    /// logged, because the second request is a content bug someone should see.
+    /// Returns [`StartError::AlreadyRunning`] if a chain is active.
     pub fn start(
         &mut self,
         sequence: SequenceRef,
@@ -395,34 +311,14 @@ impl Runner {
                 instigator,
                 ..ChainState::default()
             },
-            frames: vec![Frame {
-                sequence,
-                index: 0,
-                run: None,
-            }],
+            frames: vec![Frame::new(sequence)],
             pending: None,
             guard: self.guard_factory.as_mut().map(|factory| factory()),
         });
         Ok(())
     }
 
-    /// Drives the chain until it blocks on an unsignaled completion, finishes, or a
-    /// guard fires. Call it whenever completions may have been signaled; between calls
-    /// the runner is inert.
-    ///
-    /// Pass the same `source` for the whole chain. Handles carry no record of who minted
-    /// them, so swapping sources mid-chain resolves them against the wrong storage.
-    ///
-    /// Whenever this answers [`Poll::Ready`], the [`ChainGuard`] has already been
-    /// dropped.
-    ///
-    /// This call always returns. Every way a chain could spin forever is guarded: branch
-    /// loops by [`max_hops_per_advance`], subroutine recursion by [`max_call_depth`], and
-    /// a state machine that never finishes by [`max_resumes_per_advance`].
-    ///
-    /// [`max_hops_per_advance`]: RunnerConfig::max_hops_per_advance
-    /// [`max_call_depth`]: RunnerConfig::max_call_depth
-    /// [`max_resumes_per_advance`]: RunnerConfig::max_resumes_per_advance
+    /// Advances the chain until it waits or ends.
     pub fn advance(
         &mut self,
         source: &mut dyn SequenceSource,
@@ -432,26 +328,20 @@ impl Runner {
         let Some(mut chain) = self.chain.take() else {
             return Poll::Ready(Outcome::Idle);
         };
-        match Self::drive(&mut chain, &self.config, &mut self.events, source, services) {
-            Drive::Blocked => {
-                self.chain = Some(chain);
-                Poll::Pending
-            }
-            Drive::Finished => {
-                drop(chain.guard.take()); // the gate opens before anyone hears "finished"
-                Poll::Ready(Outcome::Finished)
-            }
-            Drive::Aborted(reason) => {
-                drop(chain.guard.take());
-                Poll::Ready(Outcome::Aborted(reason))
-            }
-        }
+        let outcome =
+            match Self::drive(&mut chain, &self.config, &mut self.events, source, services) {
+                Drive::Blocked => {
+                    self.chain = Some(chain);
+                    return Poll::Pending;
+                }
+                Drive::Finished => Outcome::Finished,
+                Drive::Aborted(reason) => Outcome::Aborted(reason),
+            };
+        drop(chain.guard.take());
+        Poll::Ready(outcome)
     }
 
-    /// Externally ends the chain, abandoning the in-flight step: its state machine is
-    /// dropped, and any completion it was waiting on becomes an inert orphan. Returns
-    /// whether a chain was actually running. The [`ChainGuard`] is dropped before this
-    /// returns — the host surfaces "aborted" however it likes.
+    /// Stops the active chain and returns whether one existed.
     pub fn stop(&mut self) -> bool {
         match self.chain.take() {
             Some(mut chain) => {
@@ -462,31 +352,24 @@ impl Runner {
         }
     }
 
-    /// Whether a chain is in flight (running or blocked).
+    /// Returns whether a chain is active.
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.chain.is_some()
     }
 
-    /// The sequence and step index currently executing or blocked — the innermost
-    /// subroutine when calls are nested. `None` when idle.
+    /// Returns the current sequence and step index.
     #[must_use]
     pub fn current(&self) -> Option<(SequenceRef, usize)> {
         let frame = self.chain.as_ref()?.frames.last()?;
         Some((frame.sequence, frame.index))
     }
 
-    /// Drains the events accumulated by [`advance`](Runner::advance) calls, oldest
-    /// first.
-    ///
-    /// The buffer is capped at [`RunnerConfig::max_buffered_events`]; a host that never
-    /// drains loses the oldest events rather than growing without bound.
+    /// Drains buffered events in order.
     pub fn drain_events(&mut self) -> impl Iterator<Item = RunnerEvent> + '_ {
         self.events.queue.drain(..)
     }
 
-    // One function on purpose: this loop *is* the trampoline, and splitting it would
-    // scatter the control flow it exists to make readable.
     #[allow(clippy::too_many_lines)]
     fn drive(
         chain: &mut Chain,
@@ -497,12 +380,9 @@ impl Runner {
     ) -> Drive {
         let mut hops: u32 = 0;
         let mut resumes: u32 = 0;
-        // "The current step should be resumed or completed now" — set when a wait
-        // resolves or a subroutine frame pops.
         let mut resume_current = false;
 
         loop {
-            // A pending wait gates everything.
             if let Some(pending) = &chain.pending {
                 if !pending.is_complete() {
                     return Drive::Blocked;
@@ -536,7 +416,7 @@ impl Runner {
                     };
                     match caught {
                         Ok(progress) => {
-                            if let Applied::Terminate(drive) = Self::apply_progress(
+                            if let Some(drive) = Self::apply_progress(
                                 chain,
                                 config,
                                 progress,
@@ -547,18 +427,14 @@ impl Runner {
                             }
                         }
                         Err(payload) => {
-                            // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
-                            // Box itself into the trait object and every downcast would miss.
                             Self::fail_step(chain, events, sequence, index, &*payload);
                         }
                     }
                     continue;
                 }
-                // A plain step's wait or call resolved: the step is done.
-                Self::top(chain).index += 1;
+                Self::top(chain).next();
             }
 
-            // About to start the next step: running out of them ends this sequence.
             let (sequence, index) = {
                 let frame = Self::top(chain);
                 (frame.sequence, frame.index)
@@ -572,33 +448,21 @@ impl Runner {
             };
             if ended {
                 if chain.frames.len() > 1 {
-                    // A subroutine ended: its Call step in the frame below is resolved.
                     chain.frames.pop();
                     resume_current = true;
                     continue;
                 }
-                // The base sequence ran out and nothing redirected the chain.
                 return Drive::Finished;
             }
 
-            // Start the step.
             match source.step_facts(sequence, index) {
                 None => {
-                    // A null slot left by a renamed type: tolerated, and reported.
-                    events.record(RunnerEvent::StepSkipped {
-                        sequence,
-                        index,
-                        why: SkipReason::Missing,
-                    });
-                    Self::top(chain).index += 1;
+                    Self::skip(events, sequence, index, SkipReason::Missing);
+                    Self::top(chain).next();
                 }
                 Some(facts) if !facts.enabled => {
-                    events.record(RunnerEvent::StepSkipped {
-                        sequence,
-                        index,
-                        why: SkipReason::Disabled,
-                    });
-                    Self::top(chain).index += 1;
+                    Self::skip(events, sequence, index, SkipReason::Disabled);
+                    Self::top(chain).next();
                 }
                 Some(_facts) => {
                     events.record(RunnerEvent::StepStarted { sequence, index });
@@ -609,7 +473,7 @@ impl Runner {
                     };
                     match caught {
                         Ok(Some(progress)) => {
-                            if let Applied::Terminate(drive) = Self::apply_progress(
+                            if let Some(drive) = Self::apply_progress(
                                 chain,
                                 config,
                                 progress,
@@ -620,16 +484,10 @@ impl Runner {
                             }
                         }
                         Ok(None) => {
-                            events.record(RunnerEvent::StepSkipped {
-                                sequence,
-                                index,
-                                why: SkipReason::Vanished,
-                            });
-                            Self::top(chain).index += 1;
+                            Self::skip(events, sequence, index, SkipReason::Vanished);
+                            Self::top(chain).next();
                         }
                         Err(payload) => {
-                            // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
-                            // Box itself into the trait object and every downcast would miss.
                             Self::fail_step(chain, events, sequence, index, &*payload);
                         }
                     }
@@ -642,50 +500,42 @@ impl Runner {
         chain.frames.last_mut().expect("a chain always has a frame")
     }
 
+    fn skip(events: &mut Events, sequence: SequenceRef, index: usize, why: SkipReason) {
+        events.record(RunnerEvent::StepSkipped {
+            sequence,
+            index,
+            why,
+        });
+    }
+
     fn apply_progress(
         chain: &mut Chain,
         config: &RunnerConfig,
         progress: Progress,
         resume_current: &mut bool,
         hops: &mut u32,
-    ) -> Applied {
+    ) -> Option<Drive> {
         match progress {
-            Progress::Done => {
-                let frame = Self::top(chain);
-                frame.run = None;
-                frame.index += 1;
-            }
+            Progress::Done => Self::top(chain).next(),
             Progress::Wait(completion) => {
-                // The frame's machine, if any, stays put: it is resumed when this
-                // resolves. An already-signaled handle is caught by the loop's pending
-                // check without blocking.
                 chain.pending = Some(completion);
             }
             Progress::Call(target) => {
                 if chain.frames.len() >= config.max_call_depth as usize {
-                    return Applied::Terminate(Drive::Aborted(AbortReason::CallDepth));
+                    return Some(Drive::Aborted(AbortReason::CallDepth));
                 }
-                chain.frames.push(Frame {
-                    sequence: target,
-                    index: 0,
-                    run: None,
-                });
+                chain.frames.push(Frame::new(target));
             }
             Progress::Goto(target) => {
                 let Some(next) = target else {
-                    return Applied::Terminate(Drive::Finished);
+                    return Some(Drive::Finished);
                 };
                 *hops += 1;
                 if *hops > config.max_hops_per_advance {
-                    return Applied::Terminate(Drive::Aborted(AbortReason::HopLimit));
+                    return Some(Drive::Aborted(AbortReason::HopLimit));
                 }
-                // Every frame goes: a goto inside a subroutine ends its caller too.
                 chain.frames.clear();
-                chain.frames.push(Frame {
-                    sequence: next,
-                    index: 0,
-                    run: None,
-                });
+                chain.frames.push(Frame::new(next));
                 *resume_current = false;
             }
             Progress::Resume(machine) => {
@@ -693,7 +543,7 @@ impl Runner {
                 *resume_current = true;
             }
         }
-        Applied::Continue
+        None
     }
 
     fn fail_step(
@@ -713,9 +563,7 @@ impl Runner {
             index,
             reason,
         });
-        let frame = Self::top(chain);
-        frame.run = None;
-        frame.index += 1;
+        Self::top(chain).next();
     }
 }
 
@@ -737,8 +585,7 @@ mod tests {
     use crate::step::{Flow, Step, StepFacts};
     use crate::steps;
 
-    /// Records that it ran, so tests can observe execution order after the chain's own
-    /// state is gone.
+    /// Records execution for a test.
     struct Probe {
         label: &'static str,
         seen: Rc<RefCell<Vec<&'static str>>>,
@@ -757,7 +604,7 @@ mod tests {
         }
     }
 
-    /// A probe that reports itself disabled.
+    /// Disabled test step.
     struct DisabledProbe(Probe);
 
     impl Step for DisabledProbe {
@@ -775,7 +622,7 @@ mod tests {
         }
     }
 
-    /// Waits once on an externally held completion.
+    /// Waits on a completion.
     struct WaitOnce(Completion);
 
     impl Step for WaitOnce {
@@ -807,7 +654,7 @@ mod tests {
         }
     }
 
-    /// A two-phase step: waits on `first`, then on `second`, counting its resumptions.
+    /// Two-phase test step.
     struct TwoPhase {
         first: Completion,
         second: Completion,
@@ -850,7 +697,7 @@ mod tests {
         }
     }
 
-    /// A multi-phase step that calls a sequence, then finishes when the call returns.
+    /// Calls a sequence, then finishes.
     struct CallThenDone {
         target: SequenceRef,
         resumes: Rc<Cell<usize>>,
@@ -890,7 +737,7 @@ mod tests {
         }
     }
 
-    /// Asserts the instigator is a specific u32 and records the answer.
+    /// Checks the instigator type and value.
     struct SeesInstigator {
         expected: u32,
         seen: Rc<RefCell<Vec<&'static str>>>,
@@ -911,7 +758,7 @@ mod tests {
         }
     }
 
-    /// Sets a shared flag when dropped — the observable stand-in for a save gate.
+    /// Sets a flag when dropped.
     struct DropFlag(Rc<Cell<bool>>);
 
     impl Drop for DropFlag {
@@ -970,8 +817,6 @@ mod tests {
 
     #[test]
     fn trampoline_runs_flat_across_branches() {
-        // A → B → C by unconditional branches, all in one advance, no stack growth
-        // observable from outside: just Finished with every probe seen in order.
         let seen = seen();
         let mut library = Library::new();
         let c = library.insert(Sequence::new("c").with_step(probe("c", &seen)));
@@ -1000,7 +845,6 @@ mod tests {
 
     #[test]
     fn take_next_rearms_stopped_for_the_successor() {
-        // If `stopped` leaked into the successor, its steps would never run.
         let seen = seen();
         let mut library = Library::new();
         let b = library.insert(Sequence::new("b").with_step(probe("b", &seen)));
@@ -1038,7 +882,6 @@ mod tests {
 
     #[test]
     fn subroutine_shares_context_so_a_nested_stop_ends_the_caller() {
-        // The C# rule: subroutines run against the same context, so Stop propagates.
         let seen = seen();
         let mut library = Library::new();
         let sub = library.insert(Sequence::new("sub").with_step(steps::Stop));
@@ -1065,8 +908,6 @@ mod tests {
 
     #[test]
     fn subroutine_flags_survive_into_the_caller() {
-        // Same context also means the blackboard is shared: a flag set in a subroutine
-        // steers a branch in the caller.
         let seen = seen();
         let mut library = Library::new();
         let happy = library.insert(Sequence::new("happy").with_step(probe("happy", &seen)));
@@ -1126,8 +967,6 @@ mod tests {
 
     #[test]
     fn call_depth_overflow_aborts() {
-        // A subroutine chain that includes itself. A guard killed the chain, so it
-        // reports the same way the hop and resume guards do.
         let mut library = Library::new();
         let a = library.insert(Sequence::new("a"));
         library
@@ -1144,7 +983,6 @@ mod tests {
 
     #[test]
     fn hop_limit_aborts_an_authored_loop() {
-        // A sequence that branches to itself with no blocking step: aborted.
         let mut library = Library::new();
         let a = library.insert(Sequence::new("a"));
         library.get_mut(a).unwrap().push(steps::Branch {
@@ -1282,7 +1120,6 @@ mod tests {
 
     #[test]
     fn missing_step_is_skipped_with_a_warning() {
-        // A source with a hole where a step should be — the serialized-storage case.
         struct Holey {
             library: Library,
             hole: (SequenceRef, usize),
@@ -1498,7 +1335,7 @@ mod tests {
         );
     }
 
-    /// A state machine that never answers Done: it swaps itself for a fresh one forever.
+    /// A state machine that never finishes.
     struct NeverDone;
     impl StepRun for NeverDone {
         fn resume(&mut self, _ctx: &mut Context<'_>) -> Progress {
@@ -1506,8 +1343,7 @@ mod tests {
         }
     }
 
-    /// A state machine that always waits on an already-signaled handle — a wait that
-    /// never actually blocks.
+    /// A wait that always resolves immediately.
     struct AlwaysDoneWait;
     impl StepRun for AlwaysDoneWait {
         fn resume(&mut self, _ctx: &mut Context<'_>) -> Progress {
@@ -1515,7 +1351,7 @@ mod tests {
         }
     }
 
-    /// Starts whichever runaway machine it is built with.
+    /// Starts a test state machine.
     struct StartsRunaway(fn() -> Box<dyn StepRun>);
     impl Step for StartsRunaway {
         fn summary(&self) -> String {
@@ -1540,8 +1376,6 @@ mod tests {
 
     #[test]
     fn a_state_machine_that_never_finishes_aborts_instead_of_spinning() {
-        // Without the resume guard this call never returns: the host thread spins inside
-        // advance() forever.
         assert_eq!(
             run_runaway(|| Box::new(NeverDone)),
             Poll::Ready(Outcome::Aborted(AbortReason::ResumeLimit))
@@ -1550,8 +1384,6 @@ mod tests {
 
     #[test]
     fn a_wait_that_never_blocks_aborts_instead_of_spinning() {
-        // The same spin by a different route: every wait resolves immediately, so the
-        // trampoline never returns to the host.
         assert_eq!(
             run_runaway(|| Box::new(AlwaysDoneWait)),
             Poll::Ready(Outcome::Aborted(AbortReason::ResumeLimit))
@@ -1574,8 +1406,7 @@ mod tests {
         );
     }
 
-    /// A well-behaved multi-phase step: waits on already-signaled handles a fixed number
-    /// of times, then finishes.
+    /// Waits on an already-complete handle a fixed number of times.
     struct PhasedStep {
         waits: usize,
         resumes: Rc<Cell<usize>>,
@@ -1624,7 +1455,6 @@ mod tests {
             Poll::Ready(Outcome::Finished)
         );
 
-        // Newest kept, oldest dropped: the last event is step 99, not step 7.
         let events: Vec<_> = runner.drain_events().collect();
         assert_eq!(events.len(), cap);
         assert_eq!(
@@ -1636,7 +1466,7 @@ mod tests {
         );
     }
 
-    /// A step whose machine calls a subroutine, then counts every later resume.
+    /// Calls a subroutine and counts later resumes.
     struct CallsThenCounts {
         target: SequenceRef,
         resumes_after_call: Rc<Cell<usize>>,
@@ -1724,8 +1554,6 @@ mod tests {
 
     #[test]
     fn goto_does_not_resume_the_callers_machine() {
-        // A goto clears every frame, so a caller mid-way through its own state machine
-        // does not get one more resume on the way out.
         let resumes_after_call = Rc::new(Cell::new(0));
         let mut library = Library::new();
         let inner = library.insert(Sequence::new("inner").with_step(steps::Stop));
@@ -1744,7 +1572,6 @@ mod tests {
 
     #[test]
     fn a_returning_subroutine_still_resumes_the_callers_machine() {
-        // The counterpart: without a goto, the caller's machine is resumed as before.
         let resumes_after_call = Rc::new(Cell::new(0));
         let mut library = Library::new();
         let inner = library.insert(Sequence::new("inner"));

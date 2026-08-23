@@ -1,4 +1,4 @@
-//! The data structure itself: [`Sequence`] and the arena that owns them, [`Library`].
+//! Sequences and their storage.
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -10,27 +10,14 @@ use crate::context::Context;
 use crate::source::{SequenceFacts, SequenceRef, SequenceSource};
 use crate::step::{Progress, Step, StepFacts};
 
-/// An ordered list of steps — a plain value.
-///
-/// Build it, iterate it, analyse it, run it. No engine, no registry, no interior
-/// mutability: a `Sequence` is immutable while it runs (all run state lives on the
-/// [`Runner`](crate::Runner)), so any number of chains can execute one sequence without
-/// trampling each other.
-///
-/// # Examples
+/// An ordered list of shared steps.
 ///
 /// ```
 /// use plotline::{Sequence, steps};
 ///
-/// let greeting = Sequence::new("greeting")
-///     .with_step(steps::Note { message: "Hello, traveler.".into() })
-///     .with_step(steps::SetFlag { name: "greeted".into(), value: true });
-///
-/// assert_eq!(greeting.len(), 2);
-/// assert_eq!(greeting[0].summary(), "Note \"Hello, traveler.\"");
-/// for step in &greeting {
-///     println!("{}", step.summary());
-/// }
+/// let sequence = Sequence::new("greeting")
+///     .with_step(steps::run("Greet", |_ctx| println!("Hello.")));
+/// assert_eq!(sequence.len(), 1);
 /// ```
 #[derive(Default)]
 pub struct Sequence {
@@ -39,7 +26,7 @@ pub struct Sequence {
 }
 
 impl Sequence {
-    /// An empty sequence with a name for logs and editors.
+    /// Creates an empty named sequence.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -48,19 +35,18 @@ impl Sequence {
         }
     }
 
-    /// The sequence's name.
+    /// Returns the sequence name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Renames the sequence.
+    /// Changes the sequence name.
     pub fn set_name(&mut self, name: impl Into<String>) {
         self.name = name.into();
     }
 
-    /// Builder-style [`push`](Sequence::push), for reading a sequence top to bottom at
-    /// the construction site.
+    /// Appends a step and returns the sequence.
     #[must_use]
     pub fn with_step(mut self, step: impl Step + 'static) -> Self {
         self.push(step);
@@ -72,7 +58,7 @@ impl Sequence {
         self.steps.push(Box::new(step));
     }
 
-    /// Inserts a step at `index`, shifting later steps down.
+    /// Inserts a step at `index`.
     ///
     /// # Panics
     ///
@@ -90,25 +76,25 @@ impl Sequence {
         self.steps.remove(index)
     }
 
-    /// The step at `index`, or `None` past the end.
+    /// Returns the step at `index`.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&dyn Step> {
         self.steps.get(index).map(AsRef::as_ref)
     }
 
-    /// Number of steps.
+    /// Returns the number of steps.
     #[must_use]
     pub fn len(&self) -> usize {
         self.steps.len()
     }
 
-    /// Whether the sequence has no steps.
+    /// Returns whether the sequence is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
 
-    /// Iterates the steps in order.
+    /// Iterates over the steps.
     #[must_use]
     pub fn iter(&self) -> Iter<'_> {
         Iter(self.steps.iter())
@@ -120,8 +106,6 @@ impl core::fmt::Debug for Sequence {
         write!(f, "Sequence({:?}) ", self.name)?;
         let mut list = f.debug_list();
         for step in self {
-            // StepFacts::of, not step.summary(): Debug on half-authored content must not
-            // panic just because a summary does.
             list.entry(&StepFacts::of(step).summary);
         }
         list.finish()
@@ -152,8 +136,7 @@ impl Extend<Box<dyn Step>> for Sequence {
 }
 
 impl FromIterator<Box<dyn Step>> for Sequence {
-    /// Collects steps into an unnamed sequence; name it afterwards with
-    /// [`set_name`](Sequence::set_name) if it will appear in logs.
+    /// Collects steps into an unnamed sequence.
     fn from_iter<T: IntoIterator<Item = Box<dyn Step>>>(iter: T) -> Self {
         Self {
             name: String::new(),
@@ -162,7 +145,7 @@ impl FromIterator<Box<dyn Step>> for Sequence {
     }
 }
 
-/// Iterator over a sequence's steps. Created by [`Sequence::iter`].
+/// Iterator over sequence steps.
 pub struct Iter<'a>(core::slice::Iter<'a, Box<dyn Step>>);
 
 impl<'a> Iterator for Iter<'a> {
@@ -179,27 +162,15 @@ impl<'a> Iterator for Iter<'a> {
 
 impl ExactSizeIterator for Iter<'_> {}
 
-/// Owns sequences and mints the [`SequenceRef`] handles steps use to reference each
-/// other — the arena that answers "how do branch targets work without an engine".
-///
-/// `Library` is the canonical [`SequenceSource`]: tests, headless tools, and other
-/// embeddings drive the [`Runner`](crate::Runner) with one of these. Handles are
-/// stable for the life of the library (nothing is ever removed; authoring removal is an
-/// editor concern, not a runtime one).
-///
-/// # Examples
+/// Owns sequences and creates their [`SequenceRef`] handles.
 ///
 /// ```
 /// use plotline::{Library, Sequence, steps};
 ///
 /// let mut library = Library::new();
-/// let farewell = library.insert(
-///     Sequence::new("farewell").with_step(steps::Note { message: "Safe roads.".into() }),
-/// );
 /// let greeting = library.insert(
-///     Sequence::new("greeting").with_step(steps::Call { sequence: Some(farewell) }),
+///     Sequence::new("greeting").with_step(steps::run("Greet", |_ctx| {})),
 /// );
-///
 /// assert_eq!(library.get(greeting).unwrap().name(), "greeting");
 /// ```
 #[derive(Debug, Default)]
@@ -208,48 +179,43 @@ pub struct Library {
 }
 
 impl Library {
-    /// An empty library.
+    /// Creates an empty library.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Takes ownership of a sequence and returns the handle other sequences use to
-    /// reference it.
+    /// Inserts a sequence and returns its handle.
     pub fn insert(&mut self, sequence: Sequence) -> SequenceRef {
         self.sequences.push(sequence);
         SequenceRef::from_raw(self.sequences.len() as u64 - 1)
     }
 
-    /// The sequence behind a handle, or `None` when the handle is past the end.
-    ///
-    /// A handle is an index into *this* library. A handle from another library resolves
-    /// to whatever sits at the same index here, silently — so keep one library per set of
-    /// sequences that reference each other.
+    /// Returns the sequence behind a handle.
     #[must_use]
     pub fn get(&self, sequence: SequenceRef) -> Option<&Sequence> {
         self.sequences.get(usize::try_from(sequence.to_raw()).ok()?)
     }
 
-    /// Mutable access to the sequence behind a handle, for authoring.
+    /// Returns mutable access to a sequence.
     pub fn get_mut(&mut self, sequence: SequenceRef) -> Option<&mut Sequence> {
         self.sequences
             .get_mut(usize::try_from(sequence.to_raw()).ok()?)
     }
 
-    /// Number of sequences.
+    /// Returns the number of sequences.
     #[must_use]
     pub fn len(&self) -> usize {
         self.sequences.len()
     }
 
-    /// Whether the library holds no sequences.
+    /// Returns whether the library is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sequences.is_empty()
     }
 
-    /// Iterates the sequences with their handles.
+    /// Iterates over handles and sequences.
     pub fn iter(&self) -> impl Iterator<Item = (SequenceRef, &Sequence)> {
         self.sequences
             .iter()
@@ -282,9 +248,6 @@ impl SequenceSource for Library {
         index: usize,
         ctx: &mut Context<'_>,
     ) -> Option<Progress> {
-        // A Vec of boxes cannot hold a missing step, so resolution failure is the only
-        // `None` here; serialized storages may also return `None` for stale or unknown
-        // step records.
         Some(self.get(sequence)?.get(index)?.start(ctx))
     }
 }

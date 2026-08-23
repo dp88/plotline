@@ -1,8 +1,4 @@
-//! Reachability analysis: which steps can run, where a sequence certainly ends.
-//!
-//! This is editor infrastructure that lives in the headless crate on purpose — the
-//! questions ("is this step reachable?", "does this branch resolve?") are about the data,
-//! not about any editor, so they are answerable and testable without one.
+//! Sequence reachability analysis.
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
@@ -13,53 +9,43 @@ use alloc::collections::BTreeSet;
 use crate::source::{SequenceFacts, SequenceRef};
 use crate::step::Flow;
 
-/// The shape a rail drawing gives one step's node.
+/// Shape of an analysis node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RailShape {
-    /// A plain step: execution flows through it.
+    /// Execution flows through the step.
     Circle,
-    /// A control-flow step: it ends the sequence, or hands control to another one.
+    /// The step ends or delegates execution.
     Diamond,
 }
 
-/// Everything a rail drawing needs to know about one step's row, in one answer.
+/// Analysis data for one step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct RailNode {
-    /// Circle for plain steps, diamond for control flow — keyed on the *declared* flow,
-    /// so a disabled branch still looks like a branch.
+    /// Node shape from the declared flow.
     pub shape: RailShape,
-    /// Solid when the step will certainly run as declared; hollow when it is disabled,
-    /// missing, or delegates to another sequence (unproven).
+    /// Whether the step is enabled, present, and not delegated.
     pub solid: bool,
-    /// This step is the sequence's certain ending: draw the cap.
+    /// Whether this step is the certain ending.
     pub terminal: bool,
-    /// This step sits after the certain ending: it can never run, and is severed from
-    /// the spine rather than merely dimmed.
+    /// Whether this step follows the certain ending.
     pub severed: bool,
-    /// The line *below* this node is softened: whether execution passes it is unproven.
-    /// Keyed on the *resolved* flow — deliberately asymmetric with `solid`, preserved
-    /// from the original: the node says "unproven as declared", the line says "resolved".
+    /// Whether execution below this step is uncertain.
     pub soften_below: bool,
 }
 
-/// What a step contributes to "does this sequence end here?".
-///
-/// A separate vocabulary from [`Flow`] on purpose: a step *declares* whether it ends, and
-/// analysis *resolves* what that plus its delegate actually amounts to. Two questions,
-/// asked at two different times, so two types.
+/// Resolved sequence reachability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reach {
-    /// Execution certainly passes this step.
+    /// Execution continues.
     Continues,
-    /// Undecidable: the answer lives behind a delegate that is unassigned,
-    /// unresolvable, or part of a cycle.
+    /// The result is uncertain.
     MayEnd,
-    /// Execution certainly stops here.
+    /// Execution ends.
     Ends,
 }
 
-/// One analysed step row.
+/// Internal row data.
 struct Row {
     declared: Flow,
     delegates: Option<SequenceRef>,
@@ -69,29 +55,14 @@ struct Row {
     warning: Option<String>,
 }
 
-/// Flow analysis of one sequence: reachability, the certain ending, and collected
-/// warnings. Rebuild it when the sequence changes; query it as often as drawing likes.
-///
-/// The rules, verbatim from the original:
-///
-/// - A **disabled** step is skipped at run time, so it cannot end anything: it continues
-///   whatever it declares.
-/// - A step with a [`delegates_to`] target is resolved through it: it certainly ends if
-///   any enabled step of the target certainly ends (the subroutine shares the caller's
-///   context, so its ending ends the caller too), certainly continues if none can, and
-///   stays undecided otherwise — including through a cycle, which a visiting set refuses
-///   to enter twice.
-/// - The **terminal** is the first enabled step that certainly ends; everything after it
-///   is **severed** — it can never run.
-///
-/// [`delegates_to`]: crate::Step::delegates_to
+/// Reachability analysis for one sequence.
 pub struct FlowModel {
     rows: Vec<Row>,
     terminal: Option<usize>,
 }
 
 impl FlowModel {
-    /// Analyses `sequence` as it stands right now.
+    /// Analyses the sequence as it stands now.
     pub fn analyse(source: &mut dyn SequenceFacts, sequence: SequenceRef) -> Self {
         let count = source.step_count(sequence).unwrap_or(0);
         let mut rows = Vec::with_capacity(count);
@@ -134,19 +105,17 @@ impl FlowModel {
         Self { rows, terminal }
     }
 
-    /// Resolves what a delegate target contributes: [`Reach::Ends`] if any of its enabled
-    /// steps certainly ends, [`Reach::MayEnd`] while anything stays undecided (an
-    /// unassigned target, an unresolvable handle, a cycle), else [`Reach::Continues`].
+    /// Resolves a delegated sequence.
     fn resolve_delegate(
         source: &mut dyn SequenceFacts,
         target: Option<SequenceRef>,
         visiting: &mut BTreeSet<SequenceRef>,
     ) -> Reach {
         let Some(target) = target else {
-            return Reach::MayEnd; // nothing to chase; the claim stays a claim
+            return Reach::MayEnd;
         };
         if !visiting.insert(target) {
-            return Reach::MayEnd; // a chain that includes itself is undecidable
+            return Reach::MayEnd;
         }
         let result = (|| {
             let Some(count) = source.step_count(target) else {
@@ -155,7 +124,7 @@ impl FlowModel {
             let mut undecided = false;
             for index in 0..count {
                 let Some(facts) = source.step_facts(target, index) else {
-                    continue; // a missing step cannot end anything
+                    continue;
                 };
                 if !facts.enabled {
                     continue;
@@ -181,32 +150,31 @@ impl FlowModel {
         result
     }
 
-    /// Number of analysed steps.
+    /// Returns the number of analysed steps.
     #[must_use]
     pub fn step_count(&self) -> usize {
         self.rows.len()
     }
 
-    /// Index of the first enabled step that certainly ends the sequence, if any.
+    /// Returns the first certain terminal index.
     #[must_use]
     pub fn terminal_index(&self) -> Option<usize> {
         self.terminal
     }
 
-    /// Whether this step is the certain ending.
+    /// Returns whether the step is terminal.
     #[must_use]
     pub fn is_terminal(&self, index: usize) -> bool {
         self.terminal == Some(index)
     }
 
-    /// Whether this step sits after the certain ending and can never run.
+    /// Returns whether the step is severed.
     #[must_use]
     pub fn is_severed(&self, index: usize) -> bool {
         self.terminal.is_some_and(|t| index > t)
     }
 
-    /// Whether this step might end the sequence, without analysis being able to prove it
-    /// either way.
+    /// Returns whether the step may end the sequence.
     ///
     /// # Panics
     ///
@@ -216,7 +184,7 @@ impl FlowModel {
         self.rows[index].resolved == Reach::MayEnd
     }
 
-    /// The step's flow as it declared it, unresolved.
+    /// Returns the declared flow.
     ///
     /// # Panics
     ///
@@ -226,7 +194,7 @@ impl FlowModel {
         self.rows[index].declared
     }
 
-    /// Whether this row is a missing step (a null slot left by a renamed class).
+    /// Returns whether the step is missing.
     ///
     /// # Panics
     ///
@@ -236,8 +204,7 @@ impl FlowModel {
         self.rows[index].missing
     }
 
-    /// The collected warnings, in step order: each step's self-report plus a synthetic
-    /// one per missing step.
+    /// Iterates over warnings in step order.
     pub fn warnings(&self) -> impl Iterator<Item = (usize, &str)> {
         self.rows
             .iter()
@@ -245,7 +212,7 @@ impl FlowModel {
             .filter_map(|(i, row)| row.warning.as_deref().map(|w| (i, w)))
     }
 
-    /// Whether this step has a warning.
+    /// Returns whether the step has a warning.
     #[must_use]
     pub fn has_warning_at(&self, index: usize) -> bool {
         self.rows
@@ -253,7 +220,7 @@ impl FlowModel {
             .is_some_and(|row| row.warning.is_some())
     }
 
-    /// One answer per row for a rail drawing.
+    /// Returns the node for one row.
     ///
     /// # Panics
     ///
@@ -348,7 +315,6 @@ mod tests {
 
     #[test]
     fn disabled_step_cannot_end_anything() {
-        // "A disabled step is skipped at run time, so it cannot end anything."
         let mut library = Library::new();
         let a = library.insert(
             Sequence::new("a")
@@ -358,7 +324,6 @@ mod tests {
         let model = FlowModel::analyse(&mut library, a);
         assert_eq!(model.terminal_index(), None);
         assert!(!model.is_severed(1));
-        // The declared flow still shows: a disabled Stop draws as a hollow diamond.
         let node = model.node(0);
         assert_eq!(node.shape, RailShape::Diamond);
         assert!(!node.solid);
@@ -413,8 +378,6 @@ mod tests {
 
     #[test]
     fn a_call_with_no_target_resolves_to_continue() {
-        // An unassigned Call delegates nowhere, so there is nothing it could end. This
-        // matches what it does at run time: warn, skip, carry on.
         let mut library = Library::new();
         let a = library.insert(Sequence::new("a").with_step(steps::Call::default()));
         let model = FlowModel::analyse(&mut library, a);
@@ -445,7 +408,6 @@ mod tests {
 
     #[test]
     fn delegate_chase_follows_nested_calls() {
-        // a → calls b → calls c → Stop: the End propagates all the way up.
         let mut library = Library::new();
         let c = library.insert(Sequence::new("c").with_step(steps::Stop));
         let b = library.insert(Sequence::new("b").with_step(steps::Call { sequence: Some(c) }));

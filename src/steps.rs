@@ -1,13 +1,4 @@
-//! Built-in steps. Use them module-qualified — `steps::Note`, `steps::Branch`.
-//!
-//! [`run`] is the short way to contribute a verb: it wraps a closure, so a one-off step
-//! needs no struct and no `impl` block.
-//!
-//! There are deliberately no labels or nested blocks, and no way into the middle of a
-//! sequence: control flow is [`Branch`] (end here, continue as one of two sequences),
-//! [`Call`] (run a sequence as a subroutine), and [`Stop`]. Each returns its decision as
-//! a [`Progress`], so a step can be tested by what it answers. Note there is no timed wait here — time belongs to the
-//! host, and a "wait N seconds" step lives in the layer that owns a clock.
+//! Built-in steps.
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -20,11 +11,10 @@ use crate::source::SequenceRef;
 use crate::step::{Flow, IntoProgress, Progress, Step};
 use crate::vocab::{Condition, Effect};
 
-/// Says a line into the runner's event stream and continues. Sequences are data, so the
-/// event stream is the debugger.
+/// Adds a note to the runner event stream.
 #[derive(Clone, Debug, Default)]
 pub struct Note {
-    /// The line to say.
+    /// Note text.
     pub message: String,
 }
 
@@ -39,12 +29,12 @@ impl Step for Note {
     }
 }
 
-/// Sets a chain-local blackboard flag for a later [`Branch`] to read.
+/// Sets a chain flag.
 #[derive(Clone, Debug)]
 pub struct SetFlag {
-    /// The flag to set.
+    /// Flag name.
     pub name: String,
-    /// The value to set it to.
+    /// Value to set.
     pub value: bool,
 }
 
@@ -75,17 +65,14 @@ impl Step for SetFlag {
     }
 }
 
-/// Ends this sequence and continues the chain with one of two others, chosen by a
-/// condition. No condition means an unconditional branch to the true target; a chosen
-/// target of `None` simply ends the chain.
+/// Chooses a target and ends the current sequence.
 #[derive(Default)]
 pub struct Branch {
-    /// The question that picks a side; `None` branches unconditionally to
-    /// [`if_true`](Branch::if_true).
+    /// Condition for selecting a target.
     pub condition: Option<Box<dyn Condition>>,
-    /// Where the chain continues when the condition holds. `None` ends the chain.
+    /// Target when the condition is true.
     pub if_true: Option<SequenceRef>,
-    /// Where the chain continues when the condition fails. `None` ends the chain.
+    /// Target when the condition is false.
     pub if_false: Option<SequenceRef>,
 }
 
@@ -134,12 +121,10 @@ impl Step for Branch {
     }
 }
 
-/// Runs another sequence as a subroutine — against the same context, so a
-/// [`Stop`] or [`Branch`] inside it ends this sequence too — then continues with the
-/// next step.
+/// Runs another sequence as a subroutine.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Call {
-    /// The sequence to run inline. `None` is an authoring gap: logged and skipped.
+    /// Sequence to run.
     pub sequence: Option<SequenceRef>,
 }
 
@@ -169,7 +154,7 @@ impl Step for Call {
     }
 }
 
-/// Ends the sequence chain immediately.
+/// Ends the chain immediately.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stop;
 
@@ -187,11 +172,10 @@ impl Step for Stop {
     }
 }
 
-/// Applies a list of instant effects to the world, in order, targeting the chain's
-/// instigator — the best target a sequence knows today.
+/// Applies effects in order.
 #[derive(Default)]
 pub struct ApplyEffects {
-    /// The effects to enact.
+    /// Effects to apply.
     pub effects: Vec<Box<dyn Effect>>,
 }
 
@@ -216,10 +200,7 @@ impl Step for ApplyEffects {
     }
 }
 
-/// A step built from a closure — the short way to contribute a verb.
-///
-/// Created by [`run`]. Carries the name you gave it, so a closure step is still legible
-/// to logs, inspectors, and [`FlowModel`](crate::FlowModel).
+/// A step created from a closure.
 pub struct Run<F> {
     name: String,
     flow: Flow,
@@ -227,31 +208,16 @@ pub struct Run<F> {
     body: F,
 }
 
-/// Wraps a closure as a step.
-///
-/// The body answers with anything [`IntoProgress`] accepts: `()` to finish now, a
-/// [`Completion`](crate::Completion) to wait on, or a full [`Progress`] when it needs
-/// control flow.
-///
-/// # Examples
+/// Wraps a closure as a step. The body can return `()`, [`Completion`](crate::Completion),
+/// or [`Progress`].
 ///
 /// ```
-/// use plotline::{Completion, Sequence, steps};
-///
-/// let gate = Completion::new();
-/// let ready = gate.clone();
+/// use plotline::{Sequence, steps};
 ///
 /// let sequence = Sequence::new("greeting")
-///     .with_step(steps::run("Greet the elder", |_ctx| println!("Hello.")))
-///     .with_step(steps::run("Wait for the panel", move |_ctx| ready.clone()))
-///     .with_step(steps::run("Remember it", |ctx| ctx.set_flag("greeted", true)));
-///
-/// assert_eq!(sequence[0].summary(), "Greet the elder");
+///     .with_step(steps::run("Greet", |_ctx| println!("Hello.")));
+/// assert_eq!(sequence[0].summary(), "Greet");
 /// ```
-///
-/// The `for<'a, 'b>` bound below is load-bearing: without it the compiler cannot infer a
-/// closure's argument here, and every call site would need an explicit
-/// `|ctx: &mut Context<'_>|` annotation.
 pub fn run<F, R>(name: impl Into<String>, body: F) -> Run<F>
 where
     F: for<'a, 'b> Fn(&'a mut Context<'b>) -> R,
@@ -266,16 +232,14 @@ where
 }
 
 impl<F> Run<F> {
-    /// Declares that no step runs after this one — for a closure that answers
-    /// [`Progress::Goto`]. Analysis reads this; the runner does not.
+    /// Declares that no later step runs.
     #[must_use]
     pub fn ends(mut self) -> Self {
         self.flow = Flow::End;
         self
     }
 
-    /// Declares the sequence this closure hands control to — for one that answers
-    /// [`Progress::Call`] or [`Progress::Goto`]. Analysis reads this; the runner does not.
+    /// Declares the delegated sequence.
     #[must_use]
     pub fn delegating_to(mut self, sequence: SequenceRef) -> Self {
         self.delegates_to = Some(sequence);
@@ -425,9 +389,7 @@ mod tests {
 
     #[test]
     fn a_closure_step_needs_no_type_annotation() {
-        // This test's value is that it compiles. Without the `for<'a, 'b>` bound on
-        // `run`, every closure below fails with "implementation of FnOnce is not general
-        // enough" and the terse form is unusable.
+        // Verify that closure argument types are inferred.
         let sequence = Sequence::new("s")
             .with_step(run("plain", |_ctx| {}))
             .with_step(run("touches the blackboard", |ctx| {

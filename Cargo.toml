@@ -14,8 +14,7 @@ exclude = [".github/", "scripts/"]
 
 [features]
 default = ["std"]
-# Panic isolation: the runner catches a panicking step, reports it, and carries on.
-# `catch_unwind` is std-only, so without this the crate behaves as `panic = "abort"` does.
+# Enables panic isolation in the runner.
 std = []
 
 [lints.rust]

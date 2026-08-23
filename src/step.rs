@@ -1,4 +1,4 @@
-//! The step contract: what a sequence is made of.
+//! Step execution types.
 
 #[cfg(feature = "std")]
 use alloc::borrow::ToOwned;
@@ -12,45 +12,27 @@ use crate::completion::Completion;
 use crate::context::Context;
 use crate::source::SequenceRef;
 
-/// Whether execution continues past a step.
-///
-/// Self-reported by the step. There is no "might end" answer: a step that hands control
-/// to another sequence says so through [`Step::delegates_to`], and analysis resolves what
-/// that contributes. One fact, stated once.
+/// Whether execution continues after a step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Flow {
-    /// The next step runs after this one.
+    /// The next step runs.
     #[default]
     Continue,
-    /// No step after this one ever runs.
+    /// No later step runs.
     End,
 }
 
-/// How one execution of a step progressed.
-///
-/// A step either finishes during its call, or returns *why it isn't finished* as a plain
-/// value. There is no clock and no frame in this vocabulary — waiting is only ever "this
-/// handle hasn't been signaled", and whoever signals it (a UI, a timer owned by the host,
-/// a test) is outside the crate's knowledge.
+/// Result of one step execution.
 pub enum Progress {
-    /// The step finished during this call.
+    /// The step finished.
     Done,
-    /// The step is waiting on the outside world; the runner holds here until the handle
-    /// is signaled.
+    /// The runner waits until the handle is signaled.
     Wait(Completion),
-    /// Run another sequence inline against the same context (a subroutine), then this
-    /// step is done.
+    /// Runs another sequence as a subroutine.
     Call(SequenceRef),
-    /// End this sequence — and every subroutine above it — then continue the chain at
-    /// `target`, or end the chain when `target` is `None`.
-    ///
-    /// This is the only way a step redirects the chain. It is a return value rather than
-    /// a method on [`Context`] so that control flow is visible in the signature, and so
-    /// that a step can be tested by what it answers.
+    /// Ends the current chain and optionally starts `target`.
     Goto(Option<SequenceRef>),
-    /// The step has more to do: an explicit state machine the runner owns and resumes.
-    /// The box is the per-run state — created fresh each execution, dropped after —
-    /// which is what keeps the [`Step`] itself shared, stateless config.
+    /// Returns a per-run state machine.
     Resume(Box<dyn StepRun>),
 }
 
@@ -66,14 +48,9 @@ impl core::fmt::Debug for Progress {
     }
 }
 
-/// What a step body may answer with.
-///
-/// Lets a closure return the ordinary thing — nothing at all, or a [`Completion`] to wait
-/// on — and still satisfy [`Step`]. Control flow is deliberately absent: a closure that
-/// redirects the chain writes [`Progress::Goto`] or [`Progress::Call`] out loud, because
-/// a bare [`SequenceRef`] could mean either one.
+/// Converts common closure results to [`Progress`].
 pub trait IntoProgress {
-    /// Converts to the runner's vocabulary.
+    /// Converts the value.
     fn into_progress(self) -> Progress;
 }
 
@@ -95,111 +72,71 @@ impl IntoProgress for Completion {
     }
 }
 
-/// The per-run state machine of a multi-phase step.
-///
-/// Most steps never need this: they finish in one call, or wait once and are done. A step
-/// with several phases — show a line, wait, show the next line — returns
-/// [`Progress::Resume`] from [`Step::start`], and the runner calls [`resume`] again each
-/// time the previously returned [`Wait`](Progress::Wait) or [`Call`](Progress::Call)
-/// resolves, until it answers [`Done`](Progress::Done).
-///
-/// Implementations must not panic in `Drop`: an abandoned run is dropped during unwind
-/// when a chain stops, and a panicking destructor there would abort the process.
-///
-/// [`resume`]: StepRun::resume
+/// Per-run state for a multi-phase step.
 pub trait StepRun {
-    /// Carries the step to its next wait or to completion.
+    /// Resumes the step.
     fn resume(&mut self, ctx: &mut Context<'_>) -> Progress;
 }
 
-/// One step of a sequence: shared, stateless config that knows how to describe itself and
-/// how to execute once.
-///
-/// Every run of a sequence executes the same step values, so a step must hold no per-run
-/// state — anything per-run lives in the [`Progress`] it returns. All methods take
-/// `&self` for the same reason, and because storage adapters may expose steps through
-/// shared borrows.
+/// Shared configuration and execution for one sequence step.
 pub trait Step {
-    /// One line describing this instance for lists and logs — the action with its data
-    /// ("Wait 2.50s"), not the type name.
+    /// Returns a display summary.
     fn summary(&self) -> String;
 
-    /// One line naming an authoring problem, or `None` when the configuration is fine.
-    /// The step is the one authority on what a valid configuration of itself looks like;
-    /// editors and analysis surface whatever it reports.
+    /// Returns an authoring warning, if any.
     fn warning(&self) -> Option<String> {
         None
     }
 
-    /// Whether execution continues past this step. Defaults to [`Flow::Continue`],
-    /// which is what all but control-flow steps answer.
+    /// Returns the declared flow. The default is [`Flow::Continue`].
     fn flow(&self) -> Flow {
         Flow::Continue
     }
 
-    /// The sequence this step hands control to. A step that answers `Some` *may* end the
-    /// sequence, depending on what the target contains; analysis chases that through.
-    /// The runner never reads this.
+    /// Returns the delegated sequence, if any.
     fn delegates_to(&self) -> Option<SequenceRef> {
         None
     }
 
-    /// Soft-delete toggle: the runner skips disabled steps entirely, and flow analysis
-    /// treats them as [`Flow::Continue`] (a step that never runs cannot end anything).
+    /// Returns whether the runner can execute this step.
     fn is_enabled(&self) -> bool {
         true
     }
 
-    /// Executes the step. Communicate only through `ctx`: a step that needs a system
-    /// reaches it via the context's services, and a missing service must log an error
-    /// and finish rather than wait for something that will never come.
+    /// Starts the step.
     fn start(&self, ctx: &mut Context<'_>) -> Progress;
 }
 
-/// A snapshot of one step's self-reported facts, so analysis and editors never hold a
-/// borrow into step storage.
-///
-/// Gather it with [`StepFacts::of`], which shields the caller from a panicking accessor —
-/// authored content is allowed to be half-finished, and a `summary()` that panics on it
-/// must not take an inspector down.
+/// Snapshot of a step's reported facts.
 #[derive(Clone, Debug)]
 pub struct StepFacts {
-    /// [`Step::summary`], or a placeholder when the step panicked describing itself.
+    /// The step summary, or a panic placeholder.
     pub summary: String,
-    /// [`Step::warning`], or a report of the panic when describing failed.
+    /// The step warning, or a panic report.
     pub warning: Option<String>,
-    /// [`Step::flow`], or [`Flow::Continue`] when describing failed (the conservative
-    /// answer: an undescribed step severs nothing).
+    /// The step flow, or [`Flow::Continue`] after a panic.
     pub flow: Flow,
-    /// [`Step::delegates_to`].
+    /// The delegated sequence.
     pub delegates_to: Option<SequenceRef>,
-    /// [`Step::is_enabled`].
+    /// Whether the step is enabled.
     pub enabled: bool,
 }
 
 impl StepFacts {
-    /// Gathers the facts, converting a panic in any accessor into a warning fact instead
-    /// of propagating it.
+    /// Collects a step's facts.
     #[must_use]
-    #[cfg(feature = "std")]
     pub fn of(step: &dyn Step) -> Self {
-        catch_unwind(AssertUnwindSafe(|| Self::gather(step))).unwrap_or_else(|_| Self {
-            summary: "<step panicked describing itself>".to_owned(),
-            warning: Some("This step panicked while describing itself.".to_owned()),
-            flow: Flow::Continue,
-            delegates_to: None,
-            enabled: true,
-        })
-    }
-
-    /// Gathers the facts.
-    ///
-    /// Without `std` there is no unwinder to catch a panicking accessor, so a
-    /// half-authored step takes the caller down with it — the same bargain
-    /// `panic = "abort"` makes.
-    #[must_use]
-    #[cfg(not(feature = "std"))]
-    pub fn of(step: &dyn Step) -> Self {
+        #[cfg(feature = "std")]
+        {
+            catch_unwind(AssertUnwindSafe(|| Self::gather(step))).unwrap_or_else(|_| Self {
+                summary: "<step panicked describing itself>".to_owned(),
+                warning: Some("This step panicked while describing itself.".to_owned()),
+                flow: Flow::Continue,
+                delegates_to: None,
+                enabled: true,
+            })
+        }
+        #[cfg(not(feature = "std"))]
         Self::gather(step)
     }
 
@@ -273,8 +210,6 @@ mod tests {
     #[test]
     #[cfg(feature = "std")] // panic isolation needs an unwinder
     fn facts_survive_a_panicking_accessor() {
-        // "Authored content is allowed to be half-finished; a property that throws on it
-        // must not take the inspector down with it."
         let facts = StepFacts::of(&PanicsDescribing);
         assert!(facts.warning.is_some());
         assert_eq!(facts.flow, Flow::Continue);

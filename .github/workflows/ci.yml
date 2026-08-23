@@ -9,9 +9,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
-# Note for anyone adding a profile here: the runner isolates a panicking step with
-# catch_unwind. `panic = "abort"` would turn that isolation into process death, so no job
-# may build this crate with it.
+# Do not build this crate with `panic = "abort"`.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -32,8 +30,7 @@ jobs:
       - run: cargo test --doc
       - run: cargo run --example dialog
 
-  # Without this the no_std arm rots: `catch_unwind` is the only thing standing between
-  # the two builds, and nothing else would notice a std-only path creeping back in.
+  # Check the no_std build separately.
   no_std:
     name: no_std
     runs-on: ubuntu-latest

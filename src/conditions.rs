@@ -1,7 +1,4 @@
-//! Built-in conditions: the composites and the chain-flag reader.
-//!
-//! Use them module-qualified — `conditions::All`, `conditions::Not` — the way the
-//! variants of an enum read.
+//! Built-in conditions.
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -11,13 +8,10 @@ use alloc::vec::Vec;
 
 use crate::vocab::{Condition, QueryCtx};
 
-/// A fixed answer: `true` by default, or `false` when authored as "Never".
-///
-/// Useful as a placeholder while authoring and as the explicit "no gate" in content that
-/// wants to say so out loud.
+/// A fixed boolean answer. The default is `true`.
 #[derive(Clone, Copy, Debug)]
 pub struct Always {
-    /// The answer this condition always gives.
+    /// The fixed answer.
     pub value: bool,
 }
 
@@ -37,13 +31,10 @@ impl Condition for Always {
     }
 }
 
-/// Inverts its inner condition.
-///
-/// A missing inner condition evaluates `false` — failing *closed*, rather than opening a
-/// gate that content meant to keep shut. [`warning`](Condition::warning) reports it.
+/// Inverts a condition. A missing condition evaluates to `false`.
 #[derive(Default)]
 pub struct Not {
-    /// The condition to invert; `None` is an authoring error.
+    /// The condition to invert.
     pub inner: Option<Box<dyn Condition>>,
 }
 
@@ -63,20 +54,16 @@ impl Condition for Not {
 
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
         match &self.inner {
-            // No inner condition means no gate to invert. Failing closed is the safe
-            // half of the guess; `warning()` is what tells an author about it.
             Some(inner) => !inner.evaluate(query),
             None => false,
         }
     }
 }
 
-/// True when every inner condition is true. **Empty means true** — no requirements.
-///
-/// Short-circuits on the first false.
+/// True when every inner condition is true. An empty list is true.
 #[derive(Default)]
 pub struct All {
-    /// The requirements, all of which must hold.
+    /// Conditions to evaluate.
     pub conditions: Vec<Box<dyn Condition>>,
 }
 
@@ -90,13 +77,10 @@ impl Condition for All {
     }
 }
 
-/// True when at least one inner condition is true. **Empty means false** — nothing was
-/// offered that could be true.
-///
-/// Short-circuits on the first true.
+/// True when any inner condition is true. An empty list is false.
 #[derive(Default)]
 pub struct Any {
-    /// The alternatives, one of which must hold.
+    /// Conditions to evaluate.
     pub conditions: Vec<Box<dyn Condition>>,
 }
 
@@ -110,22 +94,17 @@ impl Condition for Any {
     }
 }
 
-/// Reads a chain-local blackboard flag set earlier by a step or an effect.
-///
-/// Outside a running chain there is no blackboard to read, so this evaluates `false`.
-/// (The C# equivalent crashed on a null context; the `Option` in [`QueryCtx::chain`] is
-/// that bug made impossible.)
+/// Reads a chain flag. Outside a chain, it evaluates to `false`.
 #[derive(Clone, Debug, Default)]
 pub struct Flag {
-    /// The flag to read.
+    /// Flag name.
     pub name: String,
-    /// The value that makes this condition true. Defaults to `false`, so an authored
-    /// condition usually sets it; the [`is_set`](Flag::is_set) constructor sets `true`.
+    /// Expected value.
     pub expected: bool,
 }
 
 impl Flag {
-    /// A condition that is true when `name` is set.
+    /// Creates a condition that expects the flag to be set.
     #[must_use]
     pub fn is_set(name: impl Into<String>) -> Self {
         Self {
@@ -150,8 +129,6 @@ impl Condition for Flag {
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
         match query.chain {
             Some(chain) => chain.flag(&self.name) == self.expected,
-            // No chain, no blackboard. The `Option` on `QueryCtx::chain` is what makes
-            // a caller acknowledge this; answering false is the safe half.
             None => false,
         }
     }
@@ -255,8 +232,6 @@ mod tests {
 
     #[test]
     fn flag_without_chain_reads_false() {
-        // The fixed C# NRE: a trigger gate evaluating a chain flag outside a chain gets
-        // a warning and `false`, not a crash.
         let caps = TypeMap::new();
         assert!(!Flag::is_set("accepted").evaluate(&bare_query(&caps)));
     }
