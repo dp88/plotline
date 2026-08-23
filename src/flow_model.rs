@@ -304,8 +304,8 @@ mod tests {
         }
     }
 
-    fn log() -> steps::Log {
-        steps::Log {
+    fn log() -> steps::Note {
+        steps::Note {
             message: "x".into(),
         }
     }

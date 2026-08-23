@@ -62,32 +62,29 @@ which know the runner exists.
 ## Example
 
 ```rust
-use plotline::{Completion, Context, Flow, Library, Progress, Runner, Sequence,
-               Status, Step, TypeMap, steps};
+use core::task::Poll;
+use plotline::{Completion, Library, Outcome, Runner, Sequence, TypeMap, steps};
 
-// A game-side step. Timers, dialog boxes, and animations all look like this
-// from plotline's point of view: something outside signals, and the chain moves.
-struct WaitFor(Completion);
-
-impl Step for WaitFor {
-    fn summary(&self) -> String { "Wait for the world".into() }
-    fn flow(&self) -> Flow { Flow::Continue }
-    fn start(&self, _ctx: &mut Context<'_>) -> Progress {
-        Progress::Wait(self.0.clone())
-    }
-}
-
+// Something outside signals this: a dialog panel, an animation, a timer your
+// engine owns. From plotline's point of view they all look the same.
 let ready = Completion::new();
+let waiting_on = ready.clone();
 
 let mut library = Library::new();
 let farewell = library.insert(
-    Sequence::new("farewell").with_step(steps::Log { message: "Safe roads.".into() }),
+    Sequence::new("farewell")
+        .with_step(steps::run("Say goodbye", |_ctx| println!("Safe roads."))),
 );
 let greeting = library.insert(
     Sequence::new("greeting")
-        .with_step(steps::Log { message: "Hello, traveler.".into() })
-        .with_step(WaitFor(ready.clone()))
-        .with_step(steps::Branch { condition: None, if_true: Some(farewell), if_false: None }),
+        .with_step(steps::run("Say hello", |_ctx| println!("Hello, traveler.")))
+        // Returning a Completion means "wait on this". No `Progress` in sight.
+        .with_step(steps::run("Wait for the world", move |_ctx| waiting_on.clone()))
+        .with_step(steps::Branch {
+            condition: None,
+            if_true: Some(farewell),
+            if_false: None,
+        }),
 );
 
 let mut runner = Runner::default();
@@ -95,11 +92,14 @@ let mut services = TypeMap::new();
 runner.start(greeting, None).unwrap();
 
 // The chain holds at the wait...
-assert_eq!(runner.advance(&mut library, &mut services), Status::Blocked);
+assert_eq!(runner.advance(&mut library, &mut services), Poll::Pending);
 
 // ...until the world signals — from wherever, whenever "the world" is.
 ready.signal();
-assert_eq!(runner.advance(&mut library, &mut services), Status::Finished);
+assert_eq!(
+    runner.advance(&mut library, &mut services),
+    Poll::Ready(Outcome::Finished),
+);
 ```
 
 Run `cargo doc --open` for the rest. Every public item is documented.

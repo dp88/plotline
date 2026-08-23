@@ -33,8 +33,8 @@ impl Condition for Always {
 
 /// Inverts its inner condition.
 ///
-/// A missing inner condition evaluates `false` and logs an error — failing *closed*,
-/// rather than silently opening a gate that content meant to keep shut.
+/// A missing inner condition evaluates `false` — failing *closed*, rather than opening a
+/// gate that content meant to keep shut. [`warning`](Condition::warning) reports it.
 #[derive(Default)]
 pub struct Not {
     /// The condition to invert; `None` is an authoring error.
@@ -57,11 +57,10 @@ impl Condition for Not {
 
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
         match &self.inner {
+            // No inner condition means no gate to invert. Failing closed is the safe
+            // half of the guess; `warning()` is what tells an author about it.
             Some(inner) => !inner.evaluate(query),
-            None => {
-                log::error!("Not condition has no inner condition; evaluating false.");
-                false
-            }
+            None => false,
         }
     }
 }
@@ -107,9 +106,9 @@ impl Condition for Any {
 
 /// Reads a chain-local blackboard flag set earlier by a step or an effect.
 ///
-/// Outside a running chain there is no blackboard to read: this logs a warning and
-/// evaluates `false`. (The C# equivalent crashed on a null context; the `Option` in
-/// [`QueryCtx::chain`] is that bug made impossible.)
+/// Outside a running chain there is no blackboard to read, so this evaluates `false`.
+/// (The C# equivalent crashed on a null context; the `Option` in [`QueryCtx::chain`] is
+/// that bug made impossible.)
 #[derive(Clone, Debug, Default)]
 pub struct Flag {
     /// The flag to read.
@@ -145,13 +144,9 @@ impl Condition for Flag {
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
         match query.chain {
             Some(chain) => chain.flag(&self.name) == self.expected,
-            None => {
-                log::warn!(
-                    "Flag condition '{}' evaluated outside a chain; answering false.",
-                    self.name
-                );
-                false
-            }
+            // No chain, no blackboard. The `Option` on `QueryCtx::chain` is what makes
+            // a caller acknowledge this; answering false is the safe half.
+            None => false,
         }
     }
 }

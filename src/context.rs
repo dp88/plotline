@@ -3,6 +3,8 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
+use crate::runner::{Events, RunnerEvent};
+use crate::source::SequenceRef;
 use crate::vocab::{Condition, Effect, EffectCtx, QueryCtx};
 
 /// A small typed registry: one value per type.
@@ -126,11 +128,43 @@ pub(crate) struct ChainState {
 pub struct Context<'a> {
     services: &'a mut TypeMap,
     chain: &'a mut ChainState,
+    events: &'a mut Events,
+    location: (SequenceRef, usize),
 }
 
 impl<'a> Context<'a> {
-    pub(crate) fn new(services: &'a mut TypeMap, chain: &'a mut ChainState) -> Self {
-        Self { services, chain }
+    pub(crate) fn new(
+        services: &'a mut TypeMap,
+        chain: &'a mut ChainState,
+        events: &'a mut Events,
+        location: (SequenceRef, usize),
+    ) -> Self {
+        Self {
+            services,
+            chain,
+            events,
+            location,
+        }
+    }
+
+    /// Which sequence this step belongs to, and its index within it.
+    #[must_use]
+    pub fn location(&self) -> (SequenceRef, usize) {
+        self.location
+    }
+
+    /// Says something into the runner's event stream, tagged with this step's location.
+    ///
+    /// This crate owns no logger. The host drains with
+    /// [`Runner::drain_events`](crate::Runner::drain_events) and forwards wherever it
+    /// likes — `log`, `tracing`, a debug overlay, or nowhere.
+    pub fn note(&mut self, message: impl Into<String>) {
+        let (sequence, index) = self.location;
+        self.events.record(RunnerEvent::Note {
+            sequence,
+            index,
+            message: message.into(),
+        });
     }
 
     /// The host's service registry: presenters, timers, whatever the embedder installed.
@@ -211,6 +245,9 @@ impl<'a> Context<'a> {
 mod tests {
     use super::*;
 
+    /// A stand-in location for tests that do not care where the step lives.
+    const HERE: (SequenceRef, usize) = (SequenceRef::from_raw(0), 0);
+
     #[test]
     fn typemap_stores_one_value_per_type() {
         let mut map = TypeMap::new();
@@ -244,7 +281,8 @@ mod tests {
             instigator: Some(Box::new(42_i32)),
             ..ChainState::default()
         };
-        let ctx = Context::new(&mut services, &mut state);
+        let mut events = Events::default();
+        let ctx = Context::new(&mut services, &mut state, &mut events, HERE);
         assert_eq!(ctx.instigator_as::<i32>(), Some(&42));
         assert!(ctx.instigator_as::<String>().is_none());
     }

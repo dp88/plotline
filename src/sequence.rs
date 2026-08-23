@@ -17,11 +17,11 @@ use crate::step::{Progress, Step, StepFacts};
 /// use plotline::{Sequence, steps};
 ///
 /// let greeting = Sequence::new("greeting")
-///     .with_step(steps::Log { message: "Hello, traveler.".into() })
+///     .with_step(steps::Note { message: "Hello, traveler.".into() })
 ///     .with_step(steps::SetFlag { name: "greeted".into(), value: true });
 ///
 /// assert_eq!(greeting.len(), 2);
-/// assert_eq!(greeting[0].summary(), "Log \"Hello, traveler.\"");
+/// assert_eq!(greeting[0].summary(), "Note \"Hello, traveler.\"");
 /// for step in &greeting {
 ///     println!("{}", step.summary());
 /// }
@@ -188,7 +188,7 @@ impl ExactSizeIterator for Iter<'_> {}
 ///
 /// let mut library = Library::new();
 /// let farewell = library.insert(
-///     Sequence::new("farewell").with_step(steps::Log { message: "Safe roads.".into() }),
+///     Sequence::new("farewell").with_step(steps::Note { message: "Safe roads.".into() }),
 /// );
 /// let greeting = library.insert(
 ///     Sequence::new("greeting").with_step(steps::Call { sequence: Some(farewell) }),
@@ -291,7 +291,7 @@ mod tests {
     fn logs(name: &str, lines: &[&str]) -> Sequence {
         let mut sequence = Sequence::new(name);
         for line in lines {
-            sequence.push(steps::Log {
+            sequence.push(steps::Note {
                 message: (*line).to_owned(),
             });
         }
@@ -303,7 +303,7 @@ mod tests {
         let sequence = logs("s", &["a", "b", "c"]);
         assert_eq!(sequence.len(), 3);
         assert!(!sequence.is_empty());
-        assert_eq!(sequence[1].summary(), "Log \"b\"");
+        assert_eq!(sequence[1].summary(), "Note \"b\"");
         let summaries: Vec<_> = sequence.iter().map(Step::summary).collect();
         assert_eq!(summaries.len(), 3);
         assert_eq!(sequence.iter().len(), 3);
@@ -314,13 +314,13 @@ mod tests {
         let mut sequence = logs("s", &["a", "c"]);
         sequence.insert(
             1,
-            steps::Log {
+            steps::Note {
                 message: "b".into(),
             },
         );
-        assert_eq!(sequence[1].summary(), "Log \"b\"");
+        assert_eq!(sequence[1].summary(), "Note \"b\"");
         let removed = sequence.remove(0);
-        assert_eq!(removed.summary(), "Log \"a\"");
+        assert_eq!(removed.summary(), "Note \"a\"");
         assert_eq!(sequence.len(), 2);
     }
 
@@ -362,7 +362,7 @@ mod tests {
         let mut library = Library::new();
         let a = library.insert(logs("a", &["1", "2"]));
         assert_eq!(library.step_count(a), Some(2));
-        assert_eq!(library.step_facts(a, 0).unwrap().summary, "Log \"1\"");
+        assert_eq!(library.step_facts(a, 0).unwrap().summary, "Note \"1\"");
         assert!(library.step_facts(a, 9).is_none());
         assert_eq!(library.name(a), "a");
     }

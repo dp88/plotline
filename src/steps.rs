@@ -1,4 +1,4 @@
-//! Built-in steps. Use them module-qualified — `steps::Log`, `steps::Branch`.
+//! Built-in steps. Use them module-qualified — `steps::Note`, `steps::Branch`.
 //!
 //! [`run`] is the short way to contribute a verb: it wraps a closure, so a one-off step
 //! needs no struct and no `impl` block.
@@ -14,21 +14,21 @@ use crate::source::SequenceRef;
 use crate::step::{Flow, IntoProgress, Progress, Step};
 use crate::vocab::{Condition, Effect};
 
-/// Writes a line to the log and continues. Sequences are data, so the log is the
-/// debugger.
+/// Says a line into the runner's event stream and continues. Sequences are data, so the
+/// event stream is the debugger.
 #[derive(Clone, Debug, Default)]
-pub struct Log {
-    /// The line to write.
+pub struct Note {
+    /// The line to say.
     pub message: String,
 }
 
-impl Step for Log {
+impl Step for Note {
     fn summary(&self) -> String {
-        format!("Log \"{}\"", self.message)
+        format!("Note \"{}\"", self.message)
     }
 
-    fn start(&self, _ctx: &mut Context<'_>) -> Progress {
-        log::info!("{}", self.message);
+    fn start(&self, ctx: &mut Context<'_>) -> Progress {
+        ctx.note(self.message.clone());
         Progress::Done
     }
 }
@@ -152,11 +152,11 @@ impl Step for Call {
         self.sequence
     }
 
-    fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+    fn start(&self, ctx: &mut Context<'_>) -> Progress {
         match self.sequence {
             Some(sequence) => Progress::Call(sequence),
             None => {
-                log::warn!("Call step has no sequence assigned; skipping.");
+                ctx.note("Call step has no sequence assigned; skipping.");
                 Progress::Done
             }
         }
@@ -311,12 +311,20 @@ mod tests {
     use super::*;
     use crate::conditions;
     use crate::context::{ChainState, TypeMap};
+    use crate::runner::Events;
     use crate::sequence::Sequence;
 
     fn with_ctx<R>(f: impl FnOnce(&mut Context<'_>) -> R) -> (R, ChainState) {
         let mut services = TypeMap::new();
         let mut state = ChainState::default();
-        let result = f(&mut Context::new(&mut services, &mut state));
+        let mut events = Events::default();
+        let location = (SequenceRef::from_raw(0), 0);
+        let result = f(&mut Context::new(
+            &mut services,
+            &mut state,
+            &mut events,
+            location,
+        ));
         (result, state)
     }
 
@@ -396,11 +404,12 @@ mod tests {
         assert_eq!(ApplyEffects::default().summary(), "Apply no effects");
         assert!(ApplyEffects::default().warning().is_some());
         let one = ApplyEffects {
-            effects: vec![Box::new(crate::effects::Log {
-                message: "x".into(),
+            effects: vec![Box::new(crate::effects::SetFlag {
+                name: "x".into(),
+                value: true,
             })],
         };
-        assert_eq!(one.summary(), "Apply: Log \"x\"");
+        assert_eq!(one.summary(), "Apply: Set flag 'x' to true");
     }
 
     #[test]

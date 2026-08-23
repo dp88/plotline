@@ -11,10 +11,23 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::context::{ChainState, Context, TypeMap};
 use crate::source::{SequenceRef, SequenceSource};
+use core::task::Poll;
+
 use crate::step::{Progress, StepRun};
 
-/// Tunables for the runner's guards. The defaults are the C# original's constants.
+/// Tunables for the runner's guards.
+///
+/// Build one from [`Default`] and adjust with the chainable setters, which is shorter
+/// than a struct literal and survives new fields being added:
+///
+/// ```
+/// use plotline::RunnerConfig;
+///
+/// let config = RunnerConfig::default().max_call_depth(8).max_hops_per_advance(16);
+/// assert_eq!(config.max_call_depth, 8);
+/// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RunnerConfig {
     /// Maximum simultaneously active sequences in one chain — the base sequence plus
     /// nested [`Call`](Progress::Call)s. Exceeding it is a subroutine chain that includes
@@ -34,9 +47,6 @@ pub struct RunnerConfig {
     /// A host that never drains would otherwise grow the buffer for the life of the
     /// process; past this, the oldest events are dropped.
     pub max_buffered_events: usize,
-    /// Log every step start. The C# `traceSteps`: sequences are data, so the log is the
-    /// debugger.
-    pub trace: bool,
 }
 
 impl Default for RunnerConfig {
@@ -46,19 +56,47 @@ impl Default for RunnerConfig {
             max_hops_per_advance: 64,
             max_resumes_per_advance: 256,
             max_buffered_events: 4096,
-            trace: false,
         }
     }
 }
 
-/// Where a chain stands after an [`advance`](Runner::advance).
+impl RunnerConfig {
+    /// Sets [`max_call_depth`](RunnerConfig::max_call_depth).
+    #[must_use]
+    pub const fn max_call_depth(mut self, frames: u32) -> Self {
+        self.max_call_depth = frames;
+        self
+    }
+
+    /// Sets [`max_hops_per_advance`](RunnerConfig::max_hops_per_advance).
+    #[must_use]
+    pub const fn max_hops_per_advance(mut self, hops: u32) -> Self {
+        self.max_hops_per_advance = hops;
+        self
+    }
+
+    /// Sets [`max_resumes_per_advance`](RunnerConfig::max_resumes_per_advance).
+    #[must_use]
+    pub const fn max_resumes_per_advance(mut self, resumes: u32) -> Self {
+        self.max_resumes_per_advance = resumes;
+        self
+    }
+
+    /// Sets [`max_buffered_events`](RunnerConfig::max_buffered_events).
+    #[must_use]
+    pub const fn max_buffered_events(mut self, events: usize) -> Self {
+        self.max_buffered_events = events;
+        self
+    }
+}
+
+/// How a chain ended. Carried by [`Poll::Ready`] from [`advance`](Runner::advance);
+/// a chain still in flight is [`Poll::Pending`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
-    /// No chain is running.
+#[non_exhaustive]
+pub enum Outcome {
+    /// No chain was running.
     Idle,
-    /// The chain is holding on an unsignaled [`Completion`](crate::Completion); advance
-    /// again once it may have been signaled.
-    Blocked,
     /// The chain ran out of steps and is over. The [`ChainGuard`] was dropped before
     /// this was returned.
     Finished,
@@ -70,6 +108,7 @@ pub enum Status {
 /// Why a chain was aborted. External [`stop`](Runner::stop) is reported by that call
 /// itself, not through here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AbortReason {
     /// The per-advance trampoline hop guard fired: an authored loop with no blocking
     /// step.
@@ -81,10 +120,41 @@ pub enum AbortReason {
     CallDepth,
 }
 
-/// Something that happened during an [`advance`](Runner::advance), for hosts that
-/// surface progress — the editor's executing highlight listens to `StepStarted`.
-/// Drain with [`Runner::drain_events`].
+/// Why the runner passed over a step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SkipReason {
+    /// The step reported itself disabled.
+    Disabled,
+    /// The source had no step at that index — a null slot left by a renamed type.
+    Missing,
+    /// The step described itself, then was gone when the runner went to run it.
+    Vanished,
+}
+
+/// Something that happened during an [`advance`](Runner::advance).
+///
+/// This is the crate's whole diagnostic channel: sequences are data, so the event stream
+/// is the debugger. Nothing here reaches a logger by itself — drain it with
+/// [`Runner::drain_events`] and forward it wherever you like.
+///
+/// ```
+/// # use plotline::{Library, Runner, Sequence, steps};
+/// # let mut library = Library::new();
+/// # let s = library.insert(Sequence::new("s").with_step(steps::run("x", |_| {})));
+/// # let mut runner = Runner::default();
+/// # let mut services = plotline::TypeMap::new();
+/// # runner.start(s, None).unwrap();
+/// # runner.advance(&mut library, &mut services);
+/// for event in runner.drain_events() {
+///     println!("{event:?}"); // or log::info!, or tracing::event!
+/// }
+/// ```
+///
+/// A host that never drains loses the oldest events once the buffer is full, and sees
+/// nothing at all if it never looks. That is the trade for owning no logger.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RunnerEvent {
     /// An enabled step began executing.
     StepStarted {
@@ -93,7 +163,8 @@ pub enum RunnerEvent {
         /// The step's index within that sequence.
         index: usize,
     },
-    /// A step panicked; it was logged and skipped, and the chain continued.
+    /// A step panicked; it was skipped, and the chain continued. Whatever that step was
+    /// mid-way through may be half-done.
     StepFailed {
         /// The sequence the step belongs to.
         sequence: SequenceRef,
@@ -102,10 +173,52 @@ pub enum RunnerEvent {
         /// The panic payload, when it was a string.
         reason: String,
     },
+    /// A step was passed over.
+    StepSkipped {
+        /// The sequence the step belongs to.
+        sequence: SequenceRef,
+        /// The step's index within that sequence.
+        index: usize,
+        /// Why it was passed over.
+        why: SkipReason,
+    },
+    /// A sequence handle did not resolve against the source, so the runner ended it.
+    SequenceMissing {
+        /// The handle that did not resolve.
+        sequence: SequenceRef,
+    },
+    /// A step said something, through [`Context::note`](crate::Context::note).
+    Note {
+        /// The sequence the step belongs to.
+        sequence: SequenceRef,
+        /// The step's index within that sequence.
+        index: usize,
+        /// What it said.
+        message: String,
+    },
+}
+
+/// The runner's bounded event buffer. Steps reach it through
+/// [`Context::note`](crate::Context::note).
+#[derive(Debug, Default)]
+pub(crate) struct Events {
+    queue: VecDeque<RunnerEvent>,
+    cap: usize,
+}
+
+impl Events {
+    /// Records an event, dropping the oldest when the buffer is full.
+    pub(crate) fn record(&mut self, event: RunnerEvent) {
+        if self.queue.len() >= self.cap {
+            self.queue.pop_front();
+        }
+        self.queue.push_back(event);
+    }
 }
 
 /// Why [`Runner::start`] refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StartError {
     /// A chain is already in flight. Sequences are atomic, and the second request is a
     /// content bug, not a queue — the refusal is logged loudly.
@@ -179,23 +292,27 @@ enum Drive {
 /// # Examples
 ///
 /// ```
-/// use plotline::{Library, Runner, Sequence, Status, TypeMap, steps};
+/// use core::task::Poll;
+/// use plotline::{Library, Outcome, Runner, Sequence, TypeMap, steps};
 ///
 /// let mut library = Library::new();
 /// let hello = library.insert(
-///     Sequence::new("hello").with_step(steps::Log { message: "Hi.".into() }),
+///     Sequence::new("hello").with_step(steps::run("Greet", |_ctx| println!("Hi."))),
 /// );
 ///
 /// let mut runner = Runner::default();
 /// let mut services = TypeMap::new();
 /// runner.start(hello, None).unwrap();
-/// assert_eq!(runner.advance(&mut library, &mut services), Status::Finished);
+/// assert_eq!(
+///     runner.advance(&mut library, &mut services),
+///     Poll::Ready(Outcome::Finished),
+/// );
 /// ```
 pub struct Runner {
     config: RunnerConfig,
     guard_factory: Option<Box<dyn FnMut() -> ChainGuard>>,
     chain: Option<Chain>,
-    events: VecDeque<RunnerEvent>,
+    events: Events,
 }
 
 impl Default for Runner {
@@ -212,7 +329,7 @@ impl Runner {
             config,
             guard_factory: None,
             chain: None,
-            events: VecDeque::new(),
+            events: Events::default(),
         }
     }
 
@@ -244,10 +361,6 @@ impl Runner {
         instigator: Option<Box<dyn Any>>,
     ) -> Result<(), StartError> {
         if self.chain.is_some() {
-            log::warn!(
-                "A sequence chain is already running; refusing to start another. \
-                 Sequences are atomic, and the second request is a content bug, not a queue."
-            );
             return Err(StartError::AlreadyRunning);
         }
         self.chain = Some(Chain {
@@ -273,8 +386,8 @@ impl Runner {
     /// Pass the same `source` for the whole chain. Handles carry no record of who minted
     /// them, so swapping sources mid-chain resolves them against the wrong storage.
     ///
-    /// On [`Status::Finished`] and [`Status::Aborted`] the [`ChainGuard`] has already
-    /// been dropped when this returns.
+    /// Whenever this answers [`Poll::Ready`], the [`ChainGuard`] has already been
+    /// dropped.
     ///
     /// This call always returns. Every way a chain could spin forever is guarded: branch
     /// loops by [`max_hops_per_advance`], subroutine recursion by [`max_call_depth`], and
@@ -283,22 +396,27 @@ impl Runner {
     /// [`max_hops_per_advance`]: RunnerConfig::max_hops_per_advance
     /// [`max_call_depth`]: RunnerConfig::max_call_depth
     /// [`max_resumes_per_advance`]: RunnerConfig::max_resumes_per_advance
-    pub fn advance(&mut self, source: &mut dyn SequenceSource, services: &mut TypeMap) -> Status {
+    pub fn advance(
+        &mut self,
+        source: &mut dyn SequenceSource,
+        services: &mut TypeMap,
+    ) -> Poll<Outcome> {
+        self.events.cap = self.config.max_buffered_events;
         let Some(mut chain) = self.chain.take() else {
-            return Status::Idle;
+            return Poll::Ready(Outcome::Idle);
         };
         match Self::drive(&mut chain, &self.config, &mut self.events, source, services) {
             Drive::Blocked => {
                 self.chain = Some(chain);
-                Status::Blocked
+                Poll::Pending
             }
             Drive::Finished => {
                 drop(chain.guard.take()); // the gate opens before anyone hears "finished"
-                Status::Finished
+                Poll::Ready(Outcome::Finished)
             }
             Drive::Aborted(reason) => {
                 drop(chain.guard.take());
-                Status::Aborted(reason)
+                Poll::Ready(Outcome::Aborted(reason))
             }
         }
     }
@@ -337,15 +455,7 @@ impl Runner {
     /// The buffer is capped at [`RunnerConfig::max_buffered_events`]; a host that never
     /// drains loses the oldest events rather than growing without bound.
     pub fn drain_events(&mut self) -> impl Iterator<Item = RunnerEvent> + '_ {
-        self.events.drain(..)
-    }
-
-    /// Records an event, dropping the oldest when the buffer is full.
-    fn record(events: &mut VecDeque<RunnerEvent>, config: &RunnerConfig, event: RunnerEvent) {
-        if events.len() >= config.max_buffered_events {
-            events.pop_front();
-        }
-        events.push_back(event);
+        self.events.queue.drain(..)
     }
 
     // One function on purpose: this loop *is* the trampoline, and splitting it would
@@ -354,7 +464,7 @@ impl Runner {
     fn drive(
         chain: &mut Chain,
         config: &RunnerConfig,
-        events: &mut VecDeque<RunnerEvent>,
+        events: &mut Events,
         source: &mut dyn SequenceSource,
         services: &mut TypeMap,
     ) -> Drive {
@@ -384,13 +494,6 @@ impl Runner {
                     };
                     resumes += 1;
                     if resumes > config.max_resumes_per_advance {
-                        log::error!(
-                            "'{}' step {} was resumed {} times in one advance without \
-                             finishing — a StepRun that never answers Done. Aborting.",
-                            source.name(sequence),
-                            index,
-                            resumes
-                        );
                         return Drive::Aborted(AbortReason::ResumeLimit);
                     }
                     let caught = {
@@ -401,7 +504,7 @@ impl Runner {
                             .run
                             .as_mut()
                             .expect("checked above");
-                        let mut ctx = Context::new(services, state);
+                        let mut ctx = Context::new(services, state, events, (sequence, index));
                         catch_unwind(AssertUnwindSafe(|| machine.resume(&mut ctx)))
                     };
                     match caught {
@@ -412,7 +515,6 @@ impl Runner {
                                 progress,
                                 &mut resume_current,
                                 &mut hops,
-                                source,
                             ) {
                                 return drive;
                             }
@@ -420,9 +522,7 @@ impl Runner {
                         Err(payload) => {
                             // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
                             // Box itself into the trait object and every downcast would miss.
-                            Self::fail_step(
-                                chain, config, events, source, sequence, index, &*payload,
-                            );
+                            Self::fail_step(chain, events, sequence, index, &*payload);
                         }
                     }
                     continue;
@@ -439,10 +539,7 @@ impl Runner {
             let ended = match source.step_count(sequence) {
                 Some(count) => index >= count,
                 None => {
-                    log::warn!(
-                        "Sequence {} did not resolve; ending it.",
-                        source.name(sequence)
-                    );
+                    events.record(RunnerEvent::SequenceMissing { sequence });
                     true
                 }
             };
@@ -460,38 +557,27 @@ impl Runner {
             // Start the step.
             match source.step_facts(sequence, index) {
                 None => {
-                    // A null slot left by a renamed class: tolerated, loudly.
-                    log::warn!(
-                        "'{}' step {} is empty; skipping.",
-                        source.name(sequence),
-                        index
-                    );
+                    // A null slot left by a renamed type: tolerated, and reported.
+                    events.record(RunnerEvent::StepSkipped {
+                        sequence,
+                        index,
+                        why: SkipReason::Missing,
+                    });
                     Self::top(chain).index += 1;
                 }
                 Some(facts) if !facts.enabled => {
-                    if config.trace {
-                        log::debug!(
-                            "'{}' step {}: (disabled) {}",
-                            source.name(sequence),
-                            index,
-                            facts.summary
-                        );
-                    }
+                    events.record(RunnerEvent::StepSkipped {
+                        sequence,
+                        index,
+                        why: SkipReason::Disabled,
+                    });
                     Self::top(chain).index += 1;
                 }
-                Some(facts) => {
-                    if config.trace {
-                        log::debug!(
-                            "'{}' step {}: {}",
-                            source.name(sequence),
-                            index,
-                            facts.summary
-                        );
-                    }
-                    Self::record(events, config, RunnerEvent::StepStarted { sequence, index });
+                Some(_facts) => {
+                    events.record(RunnerEvent::StepStarted { sequence, index });
                     let caught = {
                         let Chain { state, .. } = &mut *chain;
-                        let mut ctx = Context::new(services, state);
+                        let mut ctx = Context::new(services, state, events, (sequence, index));
                         catch_unwind(AssertUnwindSafe(|| {
                             source.start_step(sequence, index, &mut ctx)
                         }))
@@ -504,25 +590,22 @@ impl Runner {
                                 progress,
                                 &mut resume_current,
                                 &mut hops,
-                                source,
                             ) {
                                 return drive;
                             }
                         }
                         Ok(None) => {
-                            log::warn!(
-                                "'{}' step {} vanished between describing and running; skipping.",
-                                source.name(sequence),
-                                index
-                            );
+                            events.record(RunnerEvent::StepSkipped {
+                                sequence,
+                                index,
+                                why: SkipReason::Vanished,
+                            });
                             Self::top(chain).index += 1;
                         }
                         Err(payload) => {
                             // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
                             // Box itself into the trait object and every downcast would miss.
-                            Self::fail_step(
-                                chain, config, events, source, sequence, index, &*payload,
-                            );
+                            Self::fail_step(chain, events, sequence, index, &*payload);
                         }
                     }
                 }
@@ -540,7 +623,6 @@ impl Runner {
         progress: Progress,
         resume_current: &mut bool,
         hops: &mut u32,
-        source: &mut dyn SequenceSource,
     ) -> Applied {
         match progress {
             Progress::Done => {
@@ -556,11 +638,6 @@ impl Runner {
             }
             Progress::Call(target) => {
                 if chain.frames.len() >= config.max_call_depth as usize {
-                    log::error!(
-                        "Sequence chain exceeds {} levels of nesting — a subroutine chain \
-                         that includes itself. Aborting.",
-                        config.max_call_depth
-                    );
                     return Applied::Terminate(Drive::Aborted(AbortReason::CallDepth));
                 }
                 chain.frames.push(Frame {
@@ -575,12 +652,6 @@ impl Runner {
                 };
                 *hops += 1;
                 if *hops > config.max_hops_per_advance {
-                    log::error!(
-                        "Sequence chain hopped {} times in one advance at '{}' — \
-                         an authored loop with no blocking step. Aborting.",
-                        hops,
-                        source.name(next)
-                    );
                     return Applied::Terminate(Drive::Aborted(AbortReason::HopLimit));
                 }
                 // Every frame goes: a goto inside a subroutine ends its caller too.
@@ -602,9 +673,7 @@ impl Runner {
 
     fn fail_step(
         chain: &mut Chain,
-        config: &RunnerConfig,
-        events: &mut VecDeque<RunnerEvent>,
-        source: &mut dyn SequenceSource,
+        events: &mut Events,
         sequence: SequenceRef,
         index: usize,
         payload: &(dyn Any + Send),
@@ -614,21 +683,11 @@ impl Runner {
             .map(|s| (*s).to_owned())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "non-string panic payload".to_owned());
-        log::error!(
-            "'{}' step {} panicked ({reason}); skipping it. The chain continues, but \
-             whatever that step was mid-way through may be half-done.",
-            source.name(sequence),
-            index
-        );
-        Self::record(
-            events,
-            config,
-            RunnerEvent::StepFailed {
-                sequence,
-                index,
-                reason,
-            },
-        );
+        events.record(RunnerEvent::StepFailed {
+            sequence,
+            index,
+            reason,
+        });
         let frame = Self::top(chain);
         frame.run = None;
         frame.index += 1;
@@ -839,7 +898,7 @@ mod tests {
         }
     }
 
-    fn advance(runner: &mut Runner, library: &mut Library) -> Status {
+    fn advance(runner: &mut Runner, library: &mut Library) -> Poll<Outcome> {
         let mut services = TypeMap::new();
         runner.advance(library, &mut services)
     }
@@ -850,7 +909,10 @@ mod tests {
         let empty = library.insert(Sequence::new("empty"));
         let mut runner = Runner::default();
         runner.start(empty, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert!(!runner.is_running());
     }
 
@@ -866,7 +928,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(s, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["a", "b", "c"]);
     }
 
@@ -893,7 +958,10 @@ mod tests {
         ));
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["a", "b", "c"]);
     }
 
@@ -910,7 +978,10 @@ mod tests {
         }));
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["b"]);
     }
 
@@ -925,7 +996,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert!(seen.borrow().is_empty());
     }
 
@@ -945,7 +1019,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(
             *seen.borrow(),
             vec!["before"],
@@ -977,7 +1054,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["happy"]);
     }
 
@@ -1000,7 +1080,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(
             *seen.borrow(),
             vec!["c"],
@@ -1022,7 +1105,7 @@ mod tests {
         runner.start(a, None).unwrap();
         assert_eq!(
             advance(&mut runner, &mut library),
-            Status::Aborted(AbortReason::CallDepth)
+            Poll::Ready(Outcome::Aborted(AbortReason::CallDepth))
         );
     }
 
@@ -1040,7 +1123,7 @@ mod tests {
         runner.start(a, None).unwrap();
         assert_eq!(
             advance(&mut runner, &mut library),
-            Status::Aborted(AbortReason::HopLimit)
+            Poll::Ready(Outcome::Aborted(AbortReason::HopLimit))
         );
         assert!(!runner.is_running());
     }
@@ -1057,12 +1140,15 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
         assert!(seen.borrow().is_empty());
 
         completion.signal();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["after"]);
     }
 
@@ -1072,7 +1158,10 @@ mod tests {
         let a = library.insert(Sequence::new("a").with_step(WaitOnce(Completion::done())));
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
     }
 
     #[test]
@@ -1094,12 +1183,15 @@ mod tests {
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
 
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
         first.signal();
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
         assert!(seen.borrow().is_empty());
         second.signal();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["after"]);
         assert_eq!(resume_count.get(), 3, "wait, wait, done");
     }
@@ -1122,7 +1214,10 @@ mod tests {
         let mut runner = Runner::default();
         runner.start(caller, None).unwrap();
 
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["called", "after"]);
         assert_eq!(resume_count.get(), 2, "call, then done");
     }
@@ -1138,7 +1233,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["after"]);
 
         let events: Vec<_> = runner.drain_events().collect();
@@ -1193,7 +1291,10 @@ mod tests {
         let mut runner = Runner::default();
         let mut services = TypeMap::new();
         runner.start(a, None).unwrap();
-        assert_eq!(runner.advance(&mut holey, &mut services), Status::Finished);
+        assert_eq!(
+            runner.advance(&mut holey, &mut services),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(
             *seen.borrow(),
             vec!["before", "after"],
@@ -1212,7 +1313,10 @@ mod tests {
 
         runner.start(a, None).unwrap();
         assert!(!released.get(), "guard held while the chain is in flight");
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert!(
             released.get(),
             "guard released by the time Finished is reported"
@@ -1230,7 +1334,7 @@ mod tests {
         runner.set_guard_factory(move || Box::new(DropFlag(flag.clone())));
 
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
         assert!(!released.get());
         assert!(runner.stop());
         assert!(released.get(), "external stop releases the guard too");
@@ -1254,7 +1358,7 @@ mod tests {
         runner.start(looped, None).unwrap();
         assert_eq!(
             advance(&mut runner, &mut library),
-            Status::Aborted(AbortReason::HopLimit)
+            Poll::Ready(Outcome::Aborted(AbortReason::HopLimit))
         );
         assert!(
             released.get(),
@@ -1268,7 +1372,7 @@ mod tests {
         let a = library.insert(Sequence::new("a").with_step(WaitOnce(Completion::new())));
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
         assert_eq!(runner.start(a, None), Err(StartError::AlreadyRunning));
         assert!(
             runner.is_running(),
@@ -1288,17 +1392,32 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["a", "b"]);
 
-        let started: Vec<_> = runner
-            .drain_events()
+        let events: Vec<_> = runner.drain_events().collect();
+        let started: Vec<_> = events
+            .iter()
             .filter_map(|e| match e {
-                RunnerEvent::StepStarted { index, .. } => Some(index),
-                RunnerEvent::StepFailed { .. } => None,
+                RunnerEvent::StepStarted { index, .. } => Some(*index),
+                _ => None,
             })
             .collect();
-        assert_eq!(started, vec![0, 2], "no event for the disabled step");
+        assert_eq!(started, vec![0, 2], "no start event for the disabled step");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RunnerEvent::StepSkipped {
+                    index: 1,
+                    why: SkipReason::Disabled,
+                    ..
+                }
+            )),
+            "the disabled step is reported as skipped, not silently passed over"
+        );
     }
 
     #[test]
@@ -1311,7 +1430,10 @@ mod tests {
         }));
         let mut runner = Runner::default();
         runner.start(a, Some(Box::new(7_u32))).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(*seen.borrow(), vec!["instigator-ok"]);
     }
 
@@ -1320,7 +1442,7 @@ mod tests {
         let mut library = Library::new();
         let a = library.insert(
             Sequence::new("a")
-                .with_step(steps::Log {
+                .with_step(steps::Note {
                     message: "x".into(),
                 })
                 .with_step(WaitOnce(Completion::new())),
@@ -1328,7 +1450,7 @@ mod tests {
         let mut runner = Runner::default();
         assert_eq!(runner.current(), None);
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Blocked);
+        assert_eq!(advance(&mut runner, &mut library), Poll::Pending);
         assert_eq!(runner.current(), Some((a, 1)));
     }
 
@@ -1336,7 +1458,10 @@ mod tests {
     fn advance_when_idle_is_idle() {
         let mut library = Library::new();
         let mut runner = Runner::default();
-        assert_eq!(advance(&mut runner, &mut library), Status::Idle);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Idle)
+        );
     }
 
     /// A state machine that never answers Done: it swaps itself for a fresh one forever.
@@ -1370,7 +1495,7 @@ mod tests {
         }
     }
 
-    fn run_runaway(make: fn() -> Box<dyn StepRun>) -> Status {
+    fn run_runaway(make: fn() -> Box<dyn StepRun>) -> Poll<Outcome> {
         let mut library = Library::new();
         let sequence = library.insert(Sequence::new("runaway").with_step(StartsRunaway(make)));
         let mut runner = Runner::default();
@@ -1385,7 +1510,7 @@ mod tests {
         // advance() forever.
         assert_eq!(
             run_runaway(|| Box::new(NeverDone)),
-            Status::Aborted(AbortReason::ResumeLimit)
+            Poll::Ready(Outcome::Aborted(AbortReason::ResumeLimit))
         );
     }
 
@@ -1395,7 +1520,7 @@ mod tests {
         // trampoline never returns to the host.
         assert_eq!(
             run_runaway(|| Box::new(AlwaysDoneWait)),
-            Status::Aborted(AbortReason::ResumeLimit)
+            Poll::Ready(Outcome::Aborted(AbortReason::ResumeLimit))
         );
     }
 
@@ -1411,7 +1536,7 @@ mod tests {
         runner.start(sequence, None).unwrap();
         assert_eq!(
             runner.advance(&mut library, &mut services),
-            Status::Finished
+            Poll::Ready(Outcome::Finished)
         );
     }
 
@@ -1452,22 +1577,17 @@ mod tests {
         let cap = 8;
         let mut library = Library::new();
         let mut sequence = Sequence::new("many");
-        for i in 0..100 {
-            sequence.push(steps::Log {
-                message: format!("{i}"),
-            });
+        for _ in 0..100 {
+            sequence.push(steps::run("tick", |_ctx| {}));
         }
         let sequence = library.insert(sequence);
 
-        let mut runner = Runner::new(RunnerConfig {
-            max_buffered_events: cap,
-            ..RunnerConfig::default()
-        });
+        let mut runner = Runner::new(RunnerConfig::default().max_buffered_events(cap));
         let mut services = TypeMap::new();
         runner.start(sequence, None).unwrap();
         assert_eq!(
             runner.advance(&mut library, &mut services),
-            Status::Finished
+            Poll::Ready(Outcome::Finished)
         );
 
         // Newest kept, oldest dropped: the last event is step 99, not step 7.
@@ -1539,7 +1659,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(outer, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(
             *seen.borrow(),
             vec!["inner", "landing"],
@@ -1558,7 +1681,10 @@ mod tests {
         );
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert!(seen.borrow().is_empty());
     }
 
@@ -1575,7 +1701,10 @@ mod tests {
         }));
         let mut runner = Runner::default();
         runner.start(outer, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(resumes_after_call.get(), 0);
     }
 
@@ -1591,7 +1720,87 @@ mod tests {
         }));
         let mut runner = Runner::default();
         runner.start(outer, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
         assert_eq!(resumes_after_call.get(), 1);
+    }
+
+    #[test]
+    fn a_note_reaches_the_event_stream() {
+        let mut library = Library::new();
+        let a = library.insert(
+            Sequence::new("a")
+                .with_step(steps::run("speak", |ctx| ctx.note("the elder is asleep")))
+                .with_step(steps::Note {
+                    message: "and the gate is shut".to_owned(),
+                }),
+        );
+        let mut runner = Runner::default();
+        runner.start(a, None).unwrap();
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
+
+        let notes: Vec<_> = runner
+            .drain_events()
+            .filter_map(|e| match e {
+                RunnerEvent::Note {
+                    message,
+                    sequence,
+                    index,
+                } => Some((sequence, index, message)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                (a, 0, "the elder is asleep".to_owned()),
+                (a, 1, "and the gate is shut".to_owned()),
+            ],
+            "each note is tagged with where it was said"
+        );
+    }
+
+    #[test]
+    fn advancing_with_no_chain_is_ready_and_idle() {
+        let mut library = Library::new();
+        let mut runner = Runner::default();
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Idle)
+        );
+    }
+
+    #[test]
+    fn a_missing_sequence_is_reported_not_logged() {
+        let mut library = Library::new();
+        let mut runner = Runner::default();
+        let stranger = SequenceRef::from_raw(99);
+        runner.start(stranger, None).unwrap();
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
+        assert!(runner.drain_events().any(|e| matches!(
+            e,
+            RunnerEvent::SequenceMissing { sequence } if sequence == stranger
+        )));
+    }
+
+    #[test]
+    fn config_setters_chain() {
+        let config = RunnerConfig::default()
+            .max_call_depth(8)
+            .max_hops_per_advance(16)
+            .max_resumes_per_advance(4)
+            .max_buffered_events(2);
+        assert_eq!(config.max_call_depth, 8);
+        assert_eq!(config.max_hops_per_advance, 16);
+        assert_eq!(config.max_resumes_per_advance, 4);
+        assert_eq!(config.max_buffered_events, 2);
     }
 }

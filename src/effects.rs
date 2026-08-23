@@ -1,30 +1,16 @@
-//! Built-in effects. Use them module-qualified — `effects::Log`, `effects::SetFlag`.
+//! Built-in effects. Use them module-qualified — `effects::SetFlag`.
+//!
+//! An effect runs far outside the runner — an item being used, a dialog choice, a trigger
+//! volume — so it has no event stream to speak into. An effect reports authoring problems
+//! through [`warning`](crate::Effect::warning) and otherwise stays quiet.
 
 use crate::vocab::{Effect, EffectCtx};
-
-/// Writes a line to the log. The debugging effect: sequences are data, so the log is the
-/// debugger.
-#[derive(Clone, Debug, Default)]
-pub struct Log {
-    /// The line to write.
-    pub message: String,
-}
-
-impl Effect for Log {
-    fn summary(&self) -> String {
-        format!("Log \"{}\"", self.message)
-    }
-
-    fn apply(&self, _effect_ctx: &mut EffectCtx<'_>) {
-        log::info!("{}", self.message);
-    }
-}
 
 /// Sets a chain-local blackboard flag — the interlock that lets a dialog choice steer the
 /// sequence that ran it.
 ///
-/// Fired outside a running chain there is nothing to write to: logs a warning and does
-/// nothing, per the house rule for a missing requirement.
+/// Fired outside a running chain there is nothing to write to, so it does nothing — the
+/// house rule for a missing requirement.
 #[derive(Clone, Debug)]
 pub struct SetFlag {
     /// The flag to set.
@@ -55,12 +41,11 @@ impl Effect for SetFlag {
     }
 
     fn apply(&self, effect_ctx: &mut EffectCtx<'_>) {
-        match effect_ctx.chain.as_deref_mut() {
-            Some(chain) => chain.set_flag(self.name.clone(), self.value),
-            None => log::warn!(
-                "Set-flag effect '{}' fired outside a chain; nothing to write to.",
-                self.name
-            ),
+        // No chain, nothing to write to. The `Option` on `EffectCtx::chain` is what makes
+        // a caller acknowledge that; doing nothing is the house rule for a missing
+        // requirement.
+        if let Some(chain) = effect_ctx.chain.as_deref_mut() {
+            chain.set_flag(self.name.clone(), self.value);
         }
     }
 }
