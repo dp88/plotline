@@ -60,6 +60,35 @@ impl std::fmt::Debug for Progress {
     }
 }
 
+/// What a step body may answer with.
+///
+/// Lets a closure return the ordinary thing — nothing at all, or a [`Completion`] to wait
+/// on — and still satisfy [`Step`]. Control flow is deliberately absent: a closure that
+/// redirects the chain writes [`Progress::Goto`] or [`Progress::Call`] out loud, because
+/// a bare [`SequenceRef`] could mean either one.
+pub trait IntoProgress {
+    /// Converts to the runner's vocabulary.
+    fn into_progress(self) -> Progress;
+}
+
+impl IntoProgress for () {
+    fn into_progress(self) -> Progress {
+        Progress::Done
+    }
+}
+
+impl IntoProgress for Progress {
+    fn into_progress(self) -> Progress {
+        self
+    }
+}
+
+impl IntoProgress for Completion {
+    fn into_progress(self) -> Progress {
+        Progress::Wait(self)
+    }
+}
+
 /// The per-run state machine of a multi-phase step.
 ///
 /// Most steps never need this: they finish in one call, or wait once and are done. A step

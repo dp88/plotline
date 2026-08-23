@@ -90,7 +90,7 @@ pub use flow_model::{FlowModel, RailNode, RailShape};
 pub use runner::{AbortReason, ChainGuard, Runner, RunnerConfig, RunnerEvent, StartError, Status};
 pub use sequence::{Iter, Library, Sequence};
 pub use source::{SequenceFacts, SequenceRef, SequenceSource};
-pub use step::{Flow, Progress, Step, StepFacts, StepRun};
+pub use step::{Flow, IntoProgress, Progress, Step, StepFacts, StepRun};
 pub use vocab::{Condition, Effect, EffectCtx, QueryCtx};
 
 /// Compiles the README's code blocks as doctests, so the front page cannot go stale.

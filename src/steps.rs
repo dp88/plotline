@@ -1,5 +1,8 @@
 //! Built-in steps. Use them module-qualified — `steps::Log`, `steps::Branch`.
 //!
+//! [`run`] is the short way to contribute a verb: it wraps a closure, so a one-off step
+//! needs no struct and no `impl` block.
+//!
 //! There are deliberately no labels or nested blocks, and no way into the middle of a
 //! sequence: control flow is [`Branch`] (end here, continue as one of two sequences),
 //! [`Call`] (run a sequence as a subroutine), and [`Stop`]. Each returns its decision as
@@ -8,7 +11,7 @@
 
 use crate::context::Context;
 use crate::source::SequenceRef;
-use crate::step::{Flow, Progress, Step};
+use crate::step::{Flow, IntoProgress, Progress, Step};
 use crate::vocab::{Condition, Effect};
 
 /// Writes a line to the log and continues. Sequences are data, so the log is the
@@ -207,11 +210,108 @@ impl Step for ApplyEffects {
     }
 }
 
+/// A step built from a closure — the short way to contribute a verb.
+///
+/// Created by [`run`]. Carries the name you gave it, so a closure step is still legible
+/// to logs, inspectors, and [`FlowModel`](crate::FlowModel).
+pub struct Run<F> {
+    name: String,
+    flow: Flow,
+    delegates_to: Option<SequenceRef>,
+    body: F,
+}
+
+/// Wraps a closure as a step.
+///
+/// The body answers with anything [`IntoProgress`] accepts: `()` to finish now, a
+/// [`Completion`](crate::Completion) to wait on, or a full [`Progress`] when it needs
+/// control flow.
+///
+/// # Examples
+///
+/// ```
+/// use plotline::{Completion, Sequence, steps};
+///
+/// let gate = Completion::new();
+/// let ready = gate.clone();
+///
+/// let sequence = Sequence::new("greeting")
+///     .with_step(steps::run("Greet the elder", |_ctx| println!("Hello.")))
+///     .with_step(steps::run("Wait for the panel", move |_ctx| ready.clone()))
+///     .with_step(steps::run("Remember it", |ctx| ctx.set_flag("greeted", true)));
+///
+/// assert_eq!(sequence[0].summary(), "Greet the elder");
+/// ```
+///
+/// The `for<'a, 'b>` bound below is load-bearing: without it the compiler cannot infer a
+/// closure's argument here, and every call site would need an explicit
+/// `|ctx: &mut Context<'_>|` annotation.
+pub fn run<F, R>(name: impl Into<String>, body: F) -> Run<F>
+where
+    F: for<'a, 'b> Fn(&'a mut Context<'b>) -> R,
+    R: IntoProgress,
+{
+    Run {
+        name: name.into(),
+        flow: Flow::Continue,
+        delegates_to: None,
+        body,
+    }
+}
+
+impl<F> Run<F> {
+    /// Declares that no step runs after this one — for a closure that answers
+    /// [`Progress::Goto`]. Analysis reads this; the runner does not.
+    #[must_use]
+    pub fn ends(mut self) -> Self {
+        self.flow = Flow::End;
+        self
+    }
+
+    /// Declares the sequence this closure hands control to — for one that answers
+    /// [`Progress::Call`] or [`Progress::Goto`]. Analysis reads this; the runner does not.
+    #[must_use]
+    pub fn delegating_to(mut self, sequence: SequenceRef) -> Self {
+        self.delegates_to = Some(sequence);
+        self
+    }
+}
+
+impl<F, R> Step for Run<F>
+where
+    F: for<'a, 'b> Fn(&'a mut Context<'b>) -> R,
+    R: IntoProgress,
+{
+    fn summary(&self) -> String {
+        self.name.clone()
+    }
+
+    fn warning(&self) -> Option<String> {
+        self.name
+            .trim()
+            .is_empty()
+            .then(|| "No name set; this step is anonymous in logs and inspectors.".to_owned())
+    }
+
+    fn flow(&self) -> Flow {
+        self.flow
+    }
+
+    fn delegates_to(&self) -> Option<SequenceRef> {
+        self.delegates_to
+    }
+
+    fn start(&self, ctx: &mut Context<'_>) -> Progress {
+        (self.body)(ctx).into_progress()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::conditions;
     use crate::context::{ChainState, TypeMap};
+    use crate::sequence::Sequence;
 
     fn with_ctx<R>(f: impl FnOnce(&mut Context<'_>) -> R) -> (R, ChainState) {
         let mut services = TypeMap::new();
@@ -301,5 +401,59 @@ mod tests {
             })],
         };
         assert_eq!(one.summary(), "Apply: Log \"x\"");
+    }
+
+    #[test]
+    fn a_closure_step_needs_no_type_annotation() {
+        // This test's value is that it compiles. Without the `for<'a, 'b>` bound on
+        // `run`, every closure below fails with "implementation of FnOnce is not general
+        // enough" and the terse form is unusable.
+        let sequence = Sequence::new("s")
+            .with_step(run("plain", |_ctx| {}))
+            .with_step(run("touches the blackboard", |ctx| {
+                ctx.set_flag("seen", true);
+            }))
+            .with_step(run("answers Progress", |_ctx| Progress::Done));
+        assert_eq!(sequence.len(), 3);
+    }
+
+    #[test]
+    fn a_closure_reports_its_name_to_tooling() {
+        let step = run("Greet the elder", |_ctx| {});
+        assert_eq!(step.summary(), "Greet the elder");
+        assert!(step.warning().is_none());
+        assert_eq!(step.flow(), Flow::Continue);
+        assert!(step.delegates_to().is_none());
+        assert!(
+            run("", |_ctx| {}).warning().is_some(),
+            "anonymous steps warn"
+        );
+    }
+
+    #[test]
+    fn a_closure_returning_unit_is_done() {
+        let step = run("x", |_ctx| {});
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
+        assert!(matches!(progress, Progress::Done));
+    }
+
+    #[test]
+    fn a_closure_returning_a_completion_waits() {
+        let gate = crate::Completion::new();
+        let step = run("x", move |_ctx| gate.clone());
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
+        assert!(matches!(progress, Progress::Wait(_)));
+    }
+
+    #[test]
+    fn a_closure_can_declare_its_control_flow() {
+        let target = SequenceRef::from_raw(3);
+        let step = run("branch", move |_ctx| Progress::Goto(Some(target)))
+            .ends()
+            .delegating_to(target);
+        assert_eq!(step.flow(), Flow::End);
+        assert_eq!(step.delegates_to(), Some(target));
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
+        assert!(matches!(progress, Progress::Goto(Some(r)) if r == target));
     }
 }
