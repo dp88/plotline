@@ -18,8 +18,7 @@ use crate::step::{Progress, StepRun};
 pub struct RunnerConfig {
     /// Maximum simultaneously active sequences in one chain — the base sequence plus
     /// nested [`Call`](Progress::Call)s. Exceeding it is a subroutine chain that includes
-    /// itself: the whole chain stops, as a normal finish (an authoring error is not an
-    /// engine failure).
+    /// itself: the chain aborts with [`AbortReason::CallDepth`].
     pub max_call_depth: u32,
     /// Maximum trampoline hops (branch transitions between sequences) within a single
     /// [`advance`](Runner::advance). Exceeding it is an authored loop with no blocking
@@ -78,6 +77,8 @@ pub enum AbortReason {
     /// The per-advance resume guard fired: a step's [`StepRun`] never reported
     /// [`Progress::Done`].
     ResumeLimit,
+    /// The nesting guard fired: a subroutine chain that includes itself.
+    CallDepth,
 }
 
 /// Something that happened during an [`advance`](Runner::advance), for hosts that
@@ -147,6 +148,14 @@ struct Chain {
     frames: Vec<Frame>,
     pending: Option<crate::Completion>,
     guard: Option<ChainGuard>,
+}
+
+/// What the trampoline should do after a step reported its progress.
+enum Applied {
+    /// Keep driving.
+    Continue,
+    /// Stop here and report this.
+    Terminate(Drive),
 }
 
 /// Internal outcome of driving a chain as far as it will go.
@@ -397,7 +406,16 @@ impl Runner {
                     };
                     match caught {
                         Ok(progress) => {
-                            Self::apply_progress(chain, config, progress, &mut resume_current);
+                            if let Applied::Terminate(drive) = Self::apply_progress(
+                                chain,
+                                config,
+                                progress,
+                                &mut resume_current,
+                                &mut hops,
+                                source,
+                            ) {
+                                return drive;
+                            }
                         }
                         Err(payload) => {
                             // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
@@ -413,22 +431,21 @@ impl Runner {
                 Self::top(chain).index += 1;
             }
 
-            // About to start the next step: a stop (or exhaustion) ends this sequence.
+            // About to start the next step: running out of them ends this sequence.
             let (sequence, index) = {
                 let frame = Self::top(chain);
                 (frame.sequence, frame.index)
             };
-            let ended = chain.state.stopped
-                || match source.step_count(sequence) {
-                    Some(count) => index >= count,
-                    None => {
-                        log::warn!(
-                            "Sequence {} did not resolve; ending it.",
-                            source.name(sequence)
-                        );
-                        true
-                    }
-                };
+            let ended = match source.step_count(sequence) {
+                Some(count) => index >= count,
+                None => {
+                    log::warn!(
+                        "Sequence {} did not resolve; ending it.",
+                        source.name(sequence)
+                    );
+                    true
+                }
+            };
             if ended {
                 if chain.frames.len() > 1 {
                     // A subroutine ended: its Call step in the frame below is resolved.
@@ -436,27 +453,8 @@ impl Runner {
                     resume_current = true;
                     continue;
                 }
-                match chain.state.take_next() {
-                    Some(next) => {
-                        hops += 1;
-                        if hops > config.max_hops_per_advance {
-                            log::error!(
-                                "Sequence chain hopped {} times in one advance at '{}' — \
-                                 an authored loop with no blocking step. Aborting.",
-                                hops,
-                                source.name(next)
-                            );
-                            return Drive::Aborted(AbortReason::HopLimit);
-                        }
-                        chain.frames[0] = Frame {
-                            sequence: next,
-                            index: 0,
-                            run: None,
-                        };
-                    }
-                    None => return Drive::Finished,
-                }
-                continue;
+                // The base sequence ran out and nothing redirected the chain.
+                return Drive::Finished;
             }
 
             // Start the step.
@@ -500,7 +498,16 @@ impl Runner {
                     };
                     match caught {
                         Ok(Some(progress)) => {
-                            Self::apply_progress(chain, config, progress, &mut resume_current);
+                            if let Applied::Terminate(drive) = Self::apply_progress(
+                                chain,
+                                config,
+                                progress,
+                                &mut resume_current,
+                                &mut hops,
+                                source,
+                            ) {
+                                return drive;
+                            }
                         }
                         Ok(None) => {
                             log::warn!(
@@ -532,7 +539,9 @@ impl Runner {
         config: &RunnerConfig,
         progress: Progress,
         resume_current: &mut bool,
-    ) {
+        hops: &mut u32,
+        source: &mut dyn SequenceSource,
+    ) -> Applied {
         match progress {
             Progress::Done => {
                 let frame = Self::top(chain);
@@ -549,30 +558,46 @@ impl Runner {
                 if chain.frames.len() >= config.max_call_depth as usize {
                     log::error!(
                         "Sequence chain exceeds {} levels of nesting — a subroutine chain \
-                         that includes itself. Stopping.",
+                         that includes itself. Aborting.",
                         config.max_call_depth
                     );
-                    // The whole chain stops (a normal finish, not an abort), and the
-                    // refused call resolves immediately.
-                    chain.state.stopped = true;
-                    if Self::top(chain).run.is_some() {
-                        *resume_current = true;
-                    } else {
-                        Self::top(chain).index += 1;
-                    }
-                } else {
-                    chain.frames.push(Frame {
-                        sequence: target,
-                        index: 0,
-                        run: None,
-                    });
+                    return Applied::Terminate(Drive::Aborted(AbortReason::CallDepth));
                 }
+                chain.frames.push(Frame {
+                    sequence: target,
+                    index: 0,
+                    run: None,
+                });
+            }
+            Progress::Goto(target) => {
+                let Some(next) = target else {
+                    return Applied::Terminate(Drive::Finished);
+                };
+                *hops += 1;
+                if *hops > config.max_hops_per_advance {
+                    log::error!(
+                        "Sequence chain hopped {} times in one advance at '{}' — \
+                         an authored loop with no blocking step. Aborting.",
+                        hops,
+                        source.name(next)
+                    );
+                    return Applied::Terminate(Drive::Aborted(AbortReason::HopLimit));
+                }
+                // Every frame goes: a goto inside a subroutine ends its caller too.
+                chain.frames.clear();
+                chain.frames.push(Frame {
+                    sequence: next,
+                    index: 0,
+                    run: None,
+                });
+                *resume_current = false;
             }
             Progress::Resume(machine) => {
                 Self::top(chain).run = Some(machine);
                 *resume_current = true;
             }
         }
+        Applied::Continue
     }
 
     fn fail_step(
@@ -984,9 +1009,9 @@ mod tests {
     }
 
     #[test]
-    fn call_depth_overflow_finishes_not_aborts() {
-        // A subroutine chain that includes itself: an authoring error, stopped as a
-        // normal finish — not an engine failure, so not an abort.
+    fn call_depth_overflow_aborts() {
+        // A subroutine chain that includes itself. A guard killed the chain, so it
+        // reports the same way the hop and resume guards do.
         let mut library = Library::new();
         let a = library.insert(Sequence::new("a"));
         library
@@ -995,7 +1020,10 @@ mod tests {
             .push(steps::Call { sequence: Some(a) });
         let mut runner = Runner::default();
         runner.start(a, None).unwrap();
-        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Status::Aborted(AbortReason::CallDepth)
+        );
     }
 
     #[test]
@@ -1452,5 +1480,118 @@ mod tests {
                 index: 99
             })
         );
+    }
+
+    /// A step whose machine calls a subroutine, then counts every later resume.
+    struct CallsThenCounts {
+        target: SequenceRef,
+        resumes_after_call: Rc<Cell<usize>>,
+    }
+    struct CallsThenCountsRun {
+        target: SequenceRef,
+        called: bool,
+        resumes_after_call: Rc<Cell<usize>>,
+    }
+    impl StepRun for CallsThenCountsRun {
+        fn resume(&mut self, _ctx: &mut Context<'_>) -> Progress {
+            if self.called {
+                self.resumes_after_call
+                    .set(self.resumes_after_call.get() + 1);
+                return Progress::Done;
+            }
+            self.called = true;
+            Progress::Call(self.target)
+        }
+    }
+    impl Step for CallsThenCounts {
+        fn summary(&self) -> String {
+            "calls then counts".to_owned()
+        }
+        fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+            Progress::Resume(Box::new(CallsThenCountsRun {
+                target: self.target,
+                called: false,
+                resumes_after_call: self.resumes_after_call.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn goto_from_a_subroutine_ends_the_caller() {
+        let seen = seen();
+        let mut library = Library::new();
+        let landing = library.insert(Sequence::new("landing").with_step(probe("landing", &seen)));
+        let inner = library.insert(
+            Sequence::new("inner")
+                .with_step(probe("inner", &seen))
+                .with_step(steps::Branch {
+                    condition: None,
+                    if_true: Some(landing),
+                    if_false: None,
+                }),
+        );
+        let outer = library.insert(
+            Sequence::new("outer")
+                .with_step(steps::Call {
+                    sequence: Some(inner),
+                })
+                .with_step(probe("never", &seen)),
+        );
+        let mut runner = Runner::default();
+        runner.start(outer, None).unwrap();
+        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(
+            *seen.borrow(),
+            vec!["inner", "landing"],
+            "the goto unwound the caller's frame too"
+        );
+    }
+
+    #[test]
+    fn goto_none_finishes_the_chain() {
+        let seen = seen();
+        let mut library = Library::new();
+        let a = library.insert(
+            Sequence::new("a")
+                .with_step(steps::Stop)
+                .with_step(probe("never", &seen)),
+        );
+        let mut runner = Runner::default();
+        runner.start(a, None).unwrap();
+        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert!(seen.borrow().is_empty());
+    }
+
+    #[test]
+    fn goto_does_not_resume_the_callers_machine() {
+        // A goto clears every frame, so a caller mid-way through its own state machine
+        // does not get one more resume on the way out.
+        let resumes_after_call = Rc::new(Cell::new(0));
+        let mut library = Library::new();
+        let inner = library.insert(Sequence::new("inner").with_step(steps::Stop));
+        let outer = library.insert(Sequence::new("outer").with_step(CallsThenCounts {
+            target: inner,
+            resumes_after_call: resumes_after_call.clone(),
+        }));
+        let mut runner = Runner::default();
+        runner.start(outer, None).unwrap();
+        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(resumes_after_call.get(), 0);
+    }
+
+    #[test]
+    fn a_returning_subroutine_still_resumes_the_callers_machine() {
+        // The counterpart: without a goto, the caller's machine is resumed as before.
+        let resumes_after_call = Rc::new(Cell::new(0));
+        let mut library = Library::new();
+        let inner = library.insert(Sequence::new("inner"));
+        let outer = library.insert(Sequence::new("outer").with_step(CallsThenCounts {
+            target: inner,
+            resumes_after_call: resumes_after_call.clone(),
+        }));
+        let mut runner = Runner::default();
+        runner.start(outer, None).unwrap();
+        assert_eq!(advance(&mut runner, &mut library), Status::Finished);
+        assert_eq!(resumes_after_call.get(), 1);
     }
 }

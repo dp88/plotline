@@ -3,7 +3,6 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-use crate::source::SequenceRef;
 use crate::vocab::{Condition, Effect, EffectCtx, QueryCtx};
 
 /// A small typed registry: one value per type.
@@ -114,24 +113,16 @@ impl ChainFlags {
 pub(crate) struct ChainState {
     pub(crate) flags: ChainFlags,
     pub(crate) instigator: Option<Box<dyn Any>>,
-    pub(crate) stopped: bool,
-    pub(crate) next: Option<SequenceRef>,
-}
-
-impl ChainState {
-    /// Returns and clears the successor, re-arming `stopped` for it — the runner's
-    /// trampoline is the only caller.
-    pub(crate) fn take_next(&mut self) -> Option<SequenceRef> {
-        self.stopped = false;
-        self.next.take()
-    }
 }
 
 /// What a step touches while it runs: the chain's state and the host's services.
 ///
 /// Assembled by the runner for each step invocation; steps never store it. Steps
 /// communicate *only* through this — reaching a system means finding its service here,
-/// and a missing service is an error-log-and-finish, never a hang.
+/// and a missing service must finish rather than hang.
+///
+/// It carries no control flow. A step redirects the chain by returning
+/// [`Progress::Goto`](crate::Progress::Goto), never by poking state here.
 pub struct Context<'a> {
     services: &'a mut TypeMap,
     chain: &'a mut ChainState,
@@ -187,26 +178,6 @@ impl<'a> Context<'a> {
     /// Shorthand for [`ChainFlags::set_flag`].
     pub fn set_flag(&mut self, name: impl Into<String>, value: bool) {
         self.chain.flags.set_flag(name, value);
-    }
-
-    /// Ends the current sequence after the running step. The chain then continues with a
-    /// successor only if one was set by [`branch_to`](Context::branch_to).
-    pub fn stop(&mut self) {
-        self.chain.stopped = true;
-    }
-
-    /// Ends the current sequence and continues the chain with `next` — or ends the whole
-    /// chain when `next` is `None`. Overwrites any successor set earlier.
-    pub fn branch_to(&mut self, next: Option<SequenceRef>) {
-        self.chain.next = next;
-        self.chain.stopped = true;
-    }
-
-    /// Whether the current sequence has been ended by [`stop`](Context::stop) or
-    /// [`branch_to`](Context::branch_to).
-    #[must_use]
-    pub fn is_stopped(&self) -> bool {
-        self.chain.stopped
     }
 
     /// Evaluates a condition with full chain access: the instigator as the target, the
@@ -267,21 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn take_next_returns_successor_and_rearms_stopped() {
-        let mut state = ChainState {
-            next: Some(SequenceRef::from_raw(3)),
-            stopped: true,
-            ..ChainState::default()
-        };
-        assert_eq!(state.take_next(), Some(SequenceRef::from_raw(3)));
-        assert!(
-            !state.stopped,
-            "take_next re-arms the chain for the successor"
-        );
-        assert_eq!(state.take_next(), None);
-    }
-
-    #[test]
     fn context_exposes_instigator_by_downcast() {
         let mut services = TypeMap::new();
         let mut state = ChainState {
@@ -291,15 +247,5 @@ mod tests {
         let ctx = Context::new(&mut services, &mut state);
         assert_eq!(ctx.instigator_as::<i32>(), Some(&42));
         assert!(ctx.instigator_as::<String>().is_none());
-    }
-
-    #[test]
-    fn branch_to_none_still_stops() {
-        let mut services = TypeMap::new();
-        let mut state = ChainState::default();
-        let mut ctx = Context::new(&mut services, &mut state);
-        ctx.branch_to(None);
-        assert!(ctx.is_stopped());
-        assert!(state.take_next().is_none());
     }
 }

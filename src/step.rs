@@ -8,17 +8,14 @@ use crate::source::SequenceRef;
 
 /// Whether execution continues past a step.
 ///
-/// Self-reported by the step, never derived by tooling: the step is the one authority on
-/// its own control flow, and a new step type that fails to answer is a compile error
-/// rather than a silently-missed special case in some editor table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Self-reported by the step. There is no "might end" answer: a step that hands control
+/// to another sequence says so through [`Step::delegates_to`], and analysis resolves what
+/// that contributes. One fact, stated once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Flow {
     /// The next step runs after this one.
+    #[default]
     Continue,
-    /// This step hands control to another sequence whose contents decide the answer;
-    /// claiming either outcome would be a guess. Resolved by analysis through
-    /// [`Step::delegates_to`].
-    MayEnd,
     /// No step after this one ever runs.
     End,
 }
@@ -38,6 +35,13 @@ pub enum Progress {
     /// Run another sequence inline against the same context (a subroutine), then this
     /// step is done.
     Call(SequenceRef),
+    /// End this sequence — and every subroutine above it — then continue the chain at
+    /// `target`, or end the chain when `target` is `None`.
+    ///
+    /// This is the only way a step redirects the chain. It is a return value rather than
+    /// a method on [`Context`] so that control flow is visible in the signature, and so
+    /// that a step can be tested by what it answers.
+    Goto(Option<SequenceRef>),
     /// The step has more to do: an explicit state machine the runner owns and resumes.
     /// The box is the per-run state — created fresh each execution, dropped after —
     /// which is what keeps the [`Step`] itself shared, stateless config.
@@ -50,6 +54,7 @@ impl std::fmt::Debug for Progress {
             Self::Done => f.write_str("Done"),
             Self::Wait(c) => f.debug_tuple("Wait").field(c).finish(),
             Self::Call(r) => f.debug_tuple("Call").field(r).finish(),
+            Self::Goto(r) => f.debug_tuple("Goto").field(r).finish(),
             Self::Resume(_) => f.write_str("Resume(..)"),
         }
     }
@@ -91,12 +96,15 @@ pub trait Step {
         None
     }
 
-    /// Whether execution continues past this step. Deliberately has no default body —
-    /// see [`Flow`].
-    fn flow(&self) -> Flow;
+    /// Whether execution continues past this step. Defaults to [`Flow::Continue`],
+    /// which is what all but control-flow steps answer.
+    fn flow(&self) -> Flow {
+        Flow::Continue
+    }
 
-    /// The sequence this step hands control to, letting analysis resolve a
-    /// [`Flow::MayEnd`] into a real answer. The runner never reads this.
+    /// The sequence this step hands control to. A step that answers `Some` *may* end the
+    /// sequence, depending on what the target contains; analysis chases that through.
+    /// The runner never reads this.
     fn delegates_to(&self) -> Option<SequenceRef> {
         None
     }

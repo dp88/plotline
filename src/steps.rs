@@ -1,8 +1,9 @@
 //! Built-in steps. Use them module-qualified — `steps::Log`, `steps::Branch`.
 //!
-//! There are deliberately no jumps, labels, or nested blocks: control flow is
-//! [`Branch`] (end here, continue as one of two sequences), [`Call`] (run a sequence as
-//! a subroutine), and [`Stop`]. Note there is no timed wait here — time belongs to the
+//! There are deliberately no labels or nested blocks, and no way into the middle of a
+//! sequence: control flow is [`Branch`] (end here, continue as one of two sequences),
+//! [`Call`] (run a sequence as a subroutine), and [`Stop`]. Each returns its decision as
+//! a [`Progress`], so a step can be tested by what it answers. Note there is no timed wait here — time belongs to the
 //! host, and a "wait N seconds" step lives in the layer that owns a clock.
 
 use crate::context::Context;
@@ -21,10 +22,6 @@ pub struct Log {
 impl Step for Log {
     fn summary(&self) -> String {
         format!("Log \"{}\"", self.message)
-    }
-
-    fn flow(&self) -> Flow {
-        Flow::Continue
     }
 
     fn start(&self, _ctx: &mut Context<'_>) -> Progress {
@@ -61,10 +58,6 @@ impl Step for SetFlag {
             .trim()
             .is_empty()
             .then(|| "No flag name set.".to_owned())
-    }
-
-    fn flow(&self) -> Flow {
-        Flow::Continue
     }
 
     fn start(&self, ctx: &mut Context<'_>) -> Progress {
@@ -124,12 +117,11 @@ impl Step for Branch {
             Some(condition) => ctx.eval(condition.as_ref()),
             None => true,
         };
-        ctx.branch_to(if took_true {
+        Progress::Goto(if took_true {
             self.if_true
         } else {
             self.if_false
-        });
-        Progress::Done
+        })
     }
 }
 
@@ -151,10 +143,6 @@ impl Step for Call {
         self.sequence
             .is_none()
             .then(|| "No sequence assigned; this step will be skipped.".to_owned())
-    }
-
-    fn flow(&self) -> Flow {
-        Flow::MayEnd
     }
 
     fn delegates_to(&self) -> Option<SequenceRef> {
@@ -185,9 +173,8 @@ impl Step for Stop {
         Flow::End
     }
 
-    fn start(&self, ctx: &mut Context<'_>) -> Progress {
-        ctx.stop();
-        Progress::Done
+    fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+        Progress::Goto(None)
     }
 }
 
@@ -212,10 +199,6 @@ impl Step for ApplyEffects {
         self.effects
             .is_empty()
             .then(|| "No effects to apply.".to_owned())
-    }
-
-    fn flow(&self) -> Flow {
-        Flow::Continue
     }
 
     fn start(&self, ctx: &mut Context<'_>) -> Progress {
@@ -244,9 +227,8 @@ mod tests {
             if_true: Some(SequenceRef::from_raw(1)),
             if_false: Some(SequenceRef::from_raw(2)),
         };
-        let (_, mut state) = with_ctx(|ctx| branch.start(ctx));
-        assert!(state.stopped);
-        assert_eq!(state.take_next(), Some(SequenceRef::from_raw(1)));
+        let (progress, _) = with_ctx(|ctx| branch.start(ctx));
+        assert!(matches!(progress, Progress::Goto(Some(r)) if r == SequenceRef::from_raw(1)));
     }
 
     #[test]
@@ -256,8 +238,8 @@ mod tests {
             if_true: Some(SequenceRef::from_raw(1)),
             if_false: Some(SequenceRef::from_raw(2)),
         };
-        let (_, mut state) = with_ctx(|ctx| branch.start(ctx));
-        assert_eq!(state.take_next(), Some(SequenceRef::from_raw(2)));
+        let (progress, _) = with_ctx(|ctx| branch.start(ctx));
+        assert!(matches!(progress, Progress::Goto(Some(r)) if r == SequenceRef::from_raw(2)));
     }
 
     #[test]
@@ -294,10 +276,9 @@ mod tests {
     }
 
     #[test]
-    fn stop_stops() {
-        let (_, state) = with_ctx(|ctx| Stop.start(ctx));
-        assert!(state.stopped);
-        assert!(state.next.is_none());
+    fn stop_ends_the_chain() {
+        let (progress, _) = with_ctx(|ctx| Stop.start(ctx));
+        assert!(matches!(progress, Progress::Goto(None)));
     }
 
     #[test]

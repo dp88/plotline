@@ -14,7 +14,7 @@ use crate::step::Flow;
 pub enum RailShape {
     /// A plain step: execution flows through it.
     Circle,
-    /// A control-flow step: it declared something other than [`Flow::Continue`].
+    /// A control-flow step: it ends the sequence, or hands control to another one.
     Diamond,
 }
 
@@ -26,7 +26,7 @@ pub struct RailNode {
     /// so a disabled branch still looks like a branch.
     pub shape: RailShape,
     /// Solid when the step will certainly run as declared; hollow when it is disabled,
-    /// missing, or declares [`Flow::MayEnd`] (unproven).
+    /// missing, or delegates to another sequence (unproven).
     pub solid: bool,
     /// This step is the sequence's certain ending: draw the cap.
     pub terminal: bool,
@@ -39,10 +39,27 @@ pub struct RailNode {
     pub soften_below: bool,
 }
 
+/// What a step contributes to "does this sequence end here?".
+///
+/// A separate vocabulary from [`Flow`] on purpose: a step *declares* whether it ends, and
+/// analysis *resolves* what that plus its delegate actually amounts to. Two questions,
+/// asked at two different times, so two types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    /// Execution certainly passes this step.
+    Continues,
+    /// Undecidable: the answer lives behind a delegate that is unassigned,
+    /// unresolvable, or part of a cycle.
+    MayEnd,
+    /// Execution certainly stops here.
+    Ends,
+}
+
 /// One analysed step row.
 struct Row {
     declared: Flow,
-    resolved: Flow,
+    delegates: Option<SequenceRef>,
+    resolved: Reach,
     enabled: bool,
     missing: bool,
     warning: Option<String>,
@@ -53,13 +70,13 @@ struct Row {
 ///
 /// The rules, verbatim from the original:
 ///
-/// - A **disabled** step is skipped at run time, so it cannot end anything: it resolves
-///   [`Flow::Continue`] whatever it declares.
-/// - A [`Flow::MayEnd`] step is resolved through [`delegates_to`]: promoted to
-///   [`Flow::End`] if any enabled step of the target certainly ends (the subroutine
-///   shares the caller's context, so its ending ends the caller too), demoted to
-///   [`Flow::Continue`] if none can, left [`Flow::MayEnd`] while undecided — including
-///   through a cycle, which a visiting set refuses to enter twice.
+/// - A **disabled** step is skipped at run time, so it cannot end anything: it continues
+///   whatever it declares.
+/// - A step with a [`delegates_to`] target is resolved through it: it certainly ends if
+///   any enabled step of the target certainly ends (the subroutine shares the caller's
+///   context, so its ending ends the caller too), certainly continues if none can, and
+///   stays undecided otherwise — including through a cycle, which a visiting set refuses
+///   to enter twice.
 /// - The **terminal** is the first enabled step that certainly ends; everything after it
 ///   is **severed** — it can never run.
 ///
@@ -78,7 +95,8 @@ impl FlowModel {
             rows.push(match source.step_facts(sequence, index) {
                 None => Row {
                     declared: Flow::Continue,
-                    resolved: Flow::Continue,
+                    delegates: None,
+                    resolved: Reach::Continues,
                     enabled: true,
                     missing: true,
                     warning: Some("Missing step (class renamed or removed?)".to_owned()),
@@ -86,15 +104,18 @@ impl FlowModel {
                 Some(facts) => {
                     let declared = facts.flow;
                     let resolved = if !facts.enabled {
-                        Flow::Continue
-                    } else if declared == Flow::MayEnd {
+                        Reach::Continues
+                    } else if declared == Flow::End {
+                        Reach::Ends
+                    } else if facts.delegates_to.is_some() {
                         let mut visiting = HashSet::from([sequence]);
                         Self::resolve_delegate(source, facts.delegates_to, &mut visiting)
                     } else {
-                        declared
+                        Reach::Continues
                     };
                     Row {
                         declared,
+                        delegates: facts.delegates_to,
                         resolved,
                         enabled: facts.enabled,
                         missing: false,
@@ -105,27 +126,27 @@ impl FlowModel {
         }
         let terminal = rows
             .iter()
-            .position(|row| row.enabled && !row.missing && row.resolved == Flow::End);
+            .position(|row| row.enabled && !row.missing && row.resolved == Reach::Ends);
         Self { rows, terminal }
     }
 
-    /// Resolves what a delegate target contributes: [`Flow::End`] if any of its enabled
-    /// steps certainly ends, [`Flow::MayEnd`] while anything stays undecided (an
-    /// unassigned target, an unresolvable handle, a cycle), else [`Flow::Continue`].
+    /// Resolves what a delegate target contributes: [`Reach::Ends`] if any of its enabled
+    /// steps certainly ends, [`Reach::MayEnd`] while anything stays undecided (an
+    /// unassigned target, an unresolvable handle, a cycle), else [`Reach::Continues`].
     fn resolve_delegate(
         source: &mut dyn SequenceFacts,
         target: Option<SequenceRef>,
         visiting: &mut HashSet<SequenceRef>,
-    ) -> Flow {
+    ) -> Reach {
         let Some(target) = target else {
-            return Flow::MayEnd; // nothing to chase; the claim stays a claim
+            return Reach::MayEnd; // nothing to chase; the claim stays a claim
         };
         if !visiting.insert(target) {
-            return Flow::MayEnd; // a chain that includes itself is undecidable
+            return Reach::MayEnd; // a chain that includes itself is undecidable
         }
         let result = (|| {
             let Some(count) = source.step_count(target) else {
-                return Flow::MayEnd;
+                return Reach::MayEnd;
             };
             let mut undecided = false;
             for index in 0..count {
@@ -135,22 +156,21 @@ impl FlowModel {
                 if !facts.enabled {
                     continue;
                 }
-                match facts.flow {
-                    Flow::End => return Flow::End,
-                    Flow::MayEnd => {
-                        match Self::resolve_delegate(source, facts.delegates_to, visiting) {
-                            Flow::End => return Flow::End,
-                            Flow::MayEnd => undecided = true,
-                            Flow::Continue => {}
-                        }
+                if facts.flow == Flow::End {
+                    return Reach::Ends;
+                }
+                if facts.delegates_to.is_some() {
+                    match Self::resolve_delegate(source, facts.delegates_to, visiting) {
+                        Reach::Ends => return Reach::Ends,
+                        Reach::MayEnd => undecided = true,
+                        Reach::Continues => {}
                     }
-                    Flow::Continue => {}
                 }
             }
             if undecided {
-                Flow::MayEnd
+                Reach::MayEnd
             } else {
-                Flow::Continue
+                Reach::Continues
             }
         })();
         visiting.remove(&target);
@@ -181,14 +201,15 @@ impl FlowModel {
         self.terminal.is_some_and(|t| index > t)
     }
 
-    /// Whether this step's *resolved* flow is still [`Flow::MayEnd`].
+    /// Whether this step might end the sequence, without analysis being able to prove it
+    /// either way.
     ///
     /// # Panics
     ///
     /// Panics if `index` is out of range.
     #[must_use]
     pub fn may_end_at(&self, index: usize) -> bool {
-        self.rows[index].resolved == Flow::MayEnd
+        self.rows[index].resolved == Reach::MayEnd
     }
 
     /// The step's flow as it declared it, unresolved.
@@ -237,15 +258,15 @@ impl FlowModel {
     pub fn node(&self, index: usize) -> RailNode {
         let row = &self.rows[index];
         RailNode {
-            shape: if row.declared == Flow::Continue {
-                RailShape::Circle
-            } else {
+            shape: if row.declared == Flow::End || row.delegates.is_some() {
                 RailShape::Diamond
+            } else {
+                RailShape::Circle
             },
-            solid: row.enabled && !row.missing && row.declared != Flow::MayEnd,
+            solid: row.enabled && !row.missing && row.delegates.is_none(),
             terminal: self.is_terminal(index),
             severed: self.is_severed(index),
-            soften_below: row.resolved == Flow::MayEnd,
+            soften_below: row.resolved == Reach::MayEnd,
         }
     }
 }
@@ -383,12 +404,19 @@ mod tests {
     }
 
     #[test]
-    fn may_end_stays_undecided_without_a_target() {
+    fn a_call_with_no_target_resolves_to_continue() {
+        // An unassigned Call delegates nowhere, so there is nothing it could end. This
+        // matches what it does at run time: warn, skip, carry on.
         let mut library = Library::new();
         let a = library.insert(Sequence::new("a").with_step(steps::Call::default()));
         let model = FlowModel::analyse(&mut library, a);
-        assert!(model.may_end_at(0));
-        assert!(model.node(0).soften_below);
+        assert!(!model.may_end_at(0));
+        assert!(!model.node(0).soften_below);
+        assert_eq!(
+            model.node(0).shape,
+            RailShape::Circle,
+            "nothing to delegate to and no end declared"
+        );
     }
 
     #[test]
