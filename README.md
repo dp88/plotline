@@ -3,7 +3,7 @@
 [![CI](https://github.com/dp88/plotline/actions/workflows/ci.yml/badge.svg)](https://github.com/dp88/plotline/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-Branching sequences of events as plain data. Use it for dialog, quests, and cutscenes.
+Branching sequences of events as plain data. Use it for dialog, quests, and more.
 
 ## What it does
 
@@ -161,7 +161,4 @@ for event in runner.drain_events() {
 
 ## License
 
-MIT or Apache-2.0, at your option. See [LICENSE-MIT](LICENSE-MIT) and
-[LICENSE-APACHE](LICENSE-APACHE).
-
-[`Completion`]: https://docs.rs/plotline/latest/plotline/struct.Completion.html
+[MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE)
