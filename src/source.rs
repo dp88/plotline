@@ -16,6 +16,10 @@ use crate::step::{Progress, StepFacts};
 ///
 /// This is the arena-and-handle idiom: the C# original linked sequences by direct asset
 /// reference, and a copyable handle is the ownership-friendly way to say the same thing.
+///
+/// A handle carries no record of who minted it. Handing one to a different source is not
+/// caught: it resolves to whatever that source has under the same payload, or to nothing.
+/// Drive one chain from one source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SequenceRef(u64);
 

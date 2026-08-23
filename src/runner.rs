@@ -6,6 +6,7 @@
 //! calls the runner is inert data. It does not know whether its host is realtime.
 
 use std::any::Any;
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::context::{ChainState, Context, TypeMap};
@@ -24,6 +25,16 @@ pub struct RunnerConfig {
     /// [`advance`](Runner::advance). Exceeding it is an authored loop with no blocking
     /// step: the chain aborts.
     pub max_hops_per_advance: u32,
+    /// Maximum times one step's [`StepRun`] is resumed within a single
+    /// [`advance`](Runner::advance). Exceeding it is a state machine that never reports
+    /// [`Progress::Done`] — it answers [`Resume`](Progress::Resume), or
+    /// [`Wait`](Progress::Wait) on an already-signaled handle, forever. Without this the
+    /// host thread would spin inside `advance` and never return.
+    pub max_resumes_per_advance: u32,
+    /// Maximum [`RunnerEvent`]s buffered for [`drain_events`](Runner::drain_events).
+    /// A host that never drains would otherwise grow the buffer for the life of the
+    /// process; past this, the oldest events are dropped.
+    pub max_buffered_events: usize,
     /// Log every step start. The C# `traceSteps`: sequences are data, so the log is the
     /// debugger.
     pub trace: bool,
@@ -34,6 +45,8 @@ impl Default for RunnerConfig {
         Self {
             max_call_depth: 32,
             max_hops_per_advance: 64,
+            max_resumes_per_advance: 256,
+            max_buffered_events: 4096,
             trace: false,
         }
     }
@@ -62,6 +75,9 @@ pub enum AbortReason {
     /// The per-advance trampoline hop guard fired: an authored loop with no blocking
     /// step.
     HopLimit,
+    /// The per-advance resume guard fired: a step's [`StepRun`] never reported
+    /// [`Progress::Done`].
+    ResumeLimit,
 }
 
 /// Something that happened during an [`advance`](Runner::advance), for hosts that
@@ -146,6 +162,11 @@ enum Drive {
 /// and every subroutine along the way. The runner owns all run state — the sequences
 /// themselves stay immutable shared data.
 ///
+/// A `Runner` is single-threaded: it is neither `Send` nor `Sync`, and neither is a
+/// [`Sequence`](crate::Sequence) or a [`Library`](crate::Library). The one thing that
+/// crosses threads is [`Completion`](crate::Completion), which is the whole point of it —
+/// a worker signals, and the owning thread calls `advance`.
+///
 /// # Examples
 ///
 /// ```
@@ -165,7 +186,7 @@ pub struct Runner {
     config: RunnerConfig,
     guard_factory: Option<Box<dyn FnMut() -> ChainGuard>>,
     chain: Option<Chain>,
-    events: Vec<RunnerEvent>,
+    events: VecDeque<RunnerEvent>,
 }
 
 impl Default for Runner {
@@ -182,7 +203,7 @@ impl Runner {
             config,
             guard_factory: None,
             chain: None,
-            events: Vec::new(),
+            events: VecDeque::new(),
         }
     }
 
@@ -240,8 +261,19 @@ impl Runner {
     /// guard fires. Call it whenever completions may have been signaled; between calls
     /// the runner is inert.
     ///
+    /// Pass the same `source` for the whole chain. Handles carry no record of who minted
+    /// them, so swapping sources mid-chain resolves them against the wrong storage.
+    ///
     /// On [`Status::Finished`] and [`Status::Aborted`] the [`ChainGuard`] has already
     /// been dropped when this returns.
+    ///
+    /// This call always returns. Every way a chain could spin forever is guarded: branch
+    /// loops by [`max_hops_per_advance`], subroutine recursion by [`max_call_depth`], and
+    /// a state machine that never finishes by [`max_resumes_per_advance`].
+    ///
+    /// [`max_hops_per_advance`]: RunnerConfig::max_hops_per_advance
+    /// [`max_call_depth`]: RunnerConfig::max_call_depth
+    /// [`max_resumes_per_advance`]: RunnerConfig::max_resumes_per_advance
     pub fn advance(&mut self, source: &mut dyn SequenceSource, services: &mut TypeMap) -> Status {
         let Some(mut chain) = self.chain.take() else {
             return Status::Idle;
@@ -292,8 +324,19 @@ impl Runner {
 
     /// Drains the events accumulated by [`advance`](Runner::advance) calls, oldest
     /// first.
-    pub fn drain_events(&mut self) -> std::vec::Drain<'_, RunnerEvent> {
+    ///
+    /// The buffer is capped at [`RunnerConfig::max_buffered_events`]; a host that never
+    /// drains loses the oldest events rather than growing without bound.
+    pub fn drain_events(&mut self) -> impl Iterator<Item = RunnerEvent> + '_ {
         self.events.drain(..)
+    }
+
+    /// Records an event, dropping the oldest when the buffer is full.
+    fn record(events: &mut VecDeque<RunnerEvent>, config: &RunnerConfig, event: RunnerEvent) {
+        if events.len() >= config.max_buffered_events {
+            events.pop_front();
+        }
+        events.push_back(event);
     }
 
     // One function on purpose: this loop *is* the trampoline, and splitting it would
@@ -302,11 +345,12 @@ impl Runner {
     fn drive(
         chain: &mut Chain,
         config: &RunnerConfig,
-        events: &mut Vec<RunnerEvent>,
+        events: &mut VecDeque<RunnerEvent>,
         source: &mut dyn SequenceSource,
         services: &mut TypeMap,
     ) -> Drive {
         let mut hops: u32 = 0;
+        let mut resumes: u32 = 0;
         // "The current step should be resumed or completed now" — set when a wait
         // resolves or a subroutine frame pops.
         let mut resume_current = false;
@@ -329,6 +373,17 @@ impl Runner {
                         let frame = Self::top(chain);
                         (frame.sequence, frame.index)
                     };
+                    resumes += 1;
+                    if resumes > config.max_resumes_per_advance {
+                        log::error!(
+                            "'{}' step {} was resumed {} times in one advance without \
+                             finishing — a StepRun that never answers Done. Aborting.",
+                            source.name(sequence),
+                            index,
+                            resumes
+                        );
+                        return Drive::Aborted(AbortReason::ResumeLimit);
+                    }
                     let caught = {
                         let Chain { state, frames, .. } = &mut *chain;
                         let machine = frames
@@ -347,7 +402,9 @@ impl Runner {
                         Err(payload) => {
                             // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
                             // Box itself into the trait object and every downcast would miss.
-                            Self::fail_step(chain, events, source, sequence, index, &*payload);
+                            Self::fail_step(
+                                chain, config, events, source, sequence, index, &*payload,
+                            );
                         }
                     }
                     continue;
@@ -433,7 +490,7 @@ impl Runner {
                             facts.summary
                         );
                     }
-                    events.push(RunnerEvent::StepStarted { sequence, index });
+                    Self::record(events, config, RunnerEvent::StepStarted { sequence, index });
                     let caught = {
                         let Chain { state, .. } = &mut *chain;
                         let mut ctx = Context::new(services, state);
@@ -456,7 +513,9 @@ impl Runner {
                         Err(payload) => {
                             // `&*payload`, not `&payload`: a `&Box<dyn Any>` would unsize-coerce the
                             // Box itself into the trait object and every downcast would miss.
-                            Self::fail_step(chain, events, source, sequence, index, &*payload);
+                            Self::fail_step(
+                                chain, config, events, source, sequence, index, &*payload,
+                            );
                         }
                     }
                 }
@@ -518,7 +577,8 @@ impl Runner {
 
     fn fail_step(
         chain: &mut Chain,
-        events: &mut Vec<RunnerEvent>,
+        config: &RunnerConfig,
+        events: &mut VecDeque<RunnerEvent>,
         source: &mut dyn SequenceSource,
         sequence: SequenceRef,
         index: usize,
@@ -535,11 +595,15 @@ impl Runner {
             source.name(sequence),
             index
         );
-        events.push(RunnerEvent::StepFailed {
-            sequence,
-            index,
-            reason,
-        });
+        Self::record(
+            events,
+            config,
+            RunnerEvent::StepFailed {
+                sequence,
+                index,
+                reason,
+            },
+        );
         let frame = Self::top(chain);
         frame.run = None;
         frame.index += 1;
@@ -1245,5 +1309,148 @@ mod tests {
         let mut library = Library::new();
         let mut runner = Runner::default();
         assert_eq!(advance(&mut runner, &mut library), Status::Idle);
+    }
+
+    /// A state machine that never answers Done: it swaps itself for a fresh one forever.
+    struct NeverDone;
+    impl StepRun for NeverDone {
+        fn resume(&mut self, _ctx: &mut Context<'_>) -> Progress {
+            Progress::Resume(Box::new(NeverDone))
+        }
+    }
+
+    /// A state machine that always waits on an already-signaled handle — a wait that
+    /// never actually blocks.
+    struct AlwaysDoneWait;
+    impl StepRun for AlwaysDoneWait {
+        fn resume(&mut self, _ctx: &mut Context<'_>) -> Progress {
+            Progress::Wait(Completion::done())
+        }
+    }
+
+    /// Starts whichever runaway machine it is built with.
+    struct StartsRunaway(fn() -> Box<dyn StepRun>);
+    impl Step for StartsRunaway {
+        fn summary(&self) -> String {
+            "runaway".to_owned()
+        }
+        fn flow(&self) -> Flow {
+            Flow::Continue
+        }
+        fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+            Progress::Resume((self.0)())
+        }
+    }
+
+    fn run_runaway(make: fn() -> Box<dyn StepRun>) -> Status {
+        let mut library = Library::new();
+        let sequence = library.insert(Sequence::new("runaway").with_step(StartsRunaway(make)));
+        let mut runner = Runner::default();
+        let mut services = TypeMap::new();
+        runner.start(sequence, None).unwrap();
+        runner.advance(&mut library, &mut services)
+    }
+
+    #[test]
+    fn a_state_machine_that_never_finishes_aborts_instead_of_spinning() {
+        // Without the resume guard this call never returns: the host thread spins inside
+        // advance() forever.
+        assert_eq!(
+            run_runaway(|| Box::new(NeverDone)),
+            Status::Aborted(AbortReason::ResumeLimit)
+        );
+    }
+
+    #[test]
+    fn a_wait_that_never_blocks_aborts_instead_of_spinning() {
+        // The same spin by a different route: every wait resolves immediately, so the
+        // trampoline never returns to the host.
+        assert_eq!(
+            run_runaway(|| Box::new(AlwaysDoneWait)),
+            Status::Aborted(AbortReason::ResumeLimit)
+        );
+    }
+
+    #[test]
+    fn a_legitimate_multi_phase_step_stays_under_the_resume_guard() {
+        let mut library = Library::new();
+        let sequence = library.insert(Sequence::new("phases").with_step(PhasedStep {
+            waits: 3,
+            resumes: Rc::new(Cell::new(0)),
+        }));
+        let mut runner = Runner::default();
+        let mut services = TypeMap::new();
+        runner.start(sequence, None).unwrap();
+        assert_eq!(
+            runner.advance(&mut library, &mut services),
+            Status::Finished
+        );
+    }
+
+    /// A well-behaved multi-phase step: waits on already-signaled handles a fixed number
+    /// of times, then finishes.
+    struct PhasedStep {
+        waits: usize,
+        resumes: Rc<Cell<usize>>,
+    }
+    struct PhasedRun {
+        left: usize,
+    }
+    impl StepRun for PhasedRun {
+        fn resume(&mut self, _ctx: &mut Context<'_>) -> Progress {
+            if self.left == 0 {
+                Progress::Done
+            } else {
+                self.left -= 1;
+                Progress::Wait(Completion::done())
+            }
+        }
+    }
+    impl Step for PhasedStep {
+        fn summary(&self) -> String {
+            "phased".to_owned()
+        }
+        fn flow(&self) -> Flow {
+            Flow::Continue
+        }
+        fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+            self.resumes.set(self.resumes.get() + 1);
+            Progress::Resume(Box::new(PhasedRun { left: self.waits }))
+        }
+    }
+
+    #[test]
+    fn the_event_buffer_is_bounded_when_nobody_drains() {
+        let cap = 8;
+        let mut library = Library::new();
+        let mut sequence = Sequence::new("many");
+        for i in 0..100 {
+            sequence.push(steps::Log {
+                message: format!("{i}"),
+            });
+        }
+        let sequence = library.insert(sequence);
+
+        let mut runner = Runner::new(RunnerConfig {
+            max_buffered_events: cap,
+            ..RunnerConfig::default()
+        });
+        let mut services = TypeMap::new();
+        runner.start(sequence, None).unwrap();
+        assert_eq!(
+            runner.advance(&mut library, &mut services),
+            Status::Finished
+        );
+
+        // Newest kept, oldest dropped: the last event is step 99, not step 7.
+        let events: Vec<_> = runner.drain_events().collect();
+        assert_eq!(events.len(), cap);
+        assert_eq!(
+            events.last(),
+            Some(&RunnerEvent::StepStarted {
+                sequence,
+                index: 99
+            })
+        );
     }
 }

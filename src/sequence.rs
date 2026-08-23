@@ -215,7 +215,11 @@ impl Library {
         SequenceRef::from_raw(self.sequences.len() as u64 - 1)
     }
 
-    /// The sequence behind a handle, or `None` for a handle this library never minted.
+    /// The sequence behind a handle, or `None` when the handle is past the end.
+    ///
+    /// A handle is an index into *this* library. A handle from another library resolves
+    /// to whatever sits at the same index here, silently — so keep one library per set of
+    /// sequences that reference each other.
     #[must_use]
     pub fn get(&self, sequence: SequenceRef) -> Option<&Sequence> {
         self.sequences.get(usize::try_from(sequence.to_raw()).ok()?)

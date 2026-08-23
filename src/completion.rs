@@ -111,6 +111,14 @@ mod tests {
     }
 
     #[test]
+    fn completion_crosses_threads() {
+        // The docs promise this is the one type that does; a change that broke it would
+        // otherwise only show up in a downstream build.
+        const fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Completion>();
+    }
+
+    #[test]
     fn orphaned_handle_signal_is_harmless() {
         // A chain that stopped holding the waiting side simply drops it; a late signal
         // touches only the shared flag.
