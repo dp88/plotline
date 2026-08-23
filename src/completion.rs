@@ -1,7 +1,7 @@
 //! The one way a step waits on the outside world.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A one-shot completion handle: the only wait primitive in this crate.
 ///
@@ -74,6 +74,7 @@ impl Completion {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

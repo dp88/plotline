@@ -12,6 +12,12 @@ categories = ["game-development", "data-structures"]
 readme = "README.md"
 exclude = [".github/", "scripts/"]
 
+[features]
+default = ["std"]
+# Panic isolation: the runner catches a panicking step, reports it, and carries on.
+# `catch_unwind` is std-only, so without this the crate behaves as `panic = "abort"` does.
+std = []
+
 [lints.rust]
 missing_docs = "warn"
 

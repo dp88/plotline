@@ -10,7 +10,9 @@
 //! things are `None`, and the house rule for a missing requirement is: say so and do
 //! nothing, never guess, never wait.
 
-use std::any::Any;
+use alloc::string::String;
+
+use core::any::Any;
 
 use crate::context::{ChainFlags, TypeMap};
 

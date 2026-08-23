@@ -1,7 +1,10 @@
 //! What a running step may touch: chain state, services, and the world seams.
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use alloc::boxed::Box;
+use alloc::string::String;
+
+use alloc::collections::BTreeMap;
+use core::any::{Any, TypeId};
 
 use crate::runner::{Events, RunnerEvent};
 use crate::source::SequenceRef;
@@ -29,7 +32,7 @@ use crate::vocab::{Condition, Effect, EffectCtx, QueryCtx};
 /// ```
 #[derive(Default)]
 pub struct TypeMap {
-    entries: HashMap<TypeId, Box<dyn Any>>,
+    entries: BTreeMap<TypeId, Box<dyn Any>>,
 }
 
 impl TypeMap {
@@ -72,8 +75,8 @@ impl TypeMap {
     }
 }
 
-impl std::fmt::Debug for TypeMap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for TypeMap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TypeMap")
             .field("entries", &self.entries.len())
             .finish()
@@ -87,7 +90,7 @@ impl std::fmt::Debug for TypeMap {
 /// the branch is forgotten by the sequence that handles it. An unset flag reads `false`.
 #[derive(Debug, Default)]
 pub struct ChainFlags {
-    flags: HashMap<String, bool>,
+    flags: BTreeMap<String, bool>,
 }
 
 impl ChainFlags {
@@ -243,6 +246,11 @@ impl<'a> Context<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    use alloc::boxed::Box;
+
+    use alloc::string::String;
+
     use super::*;
 
     /// A stand-in location for tests that do not care where the step lives.

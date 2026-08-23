@@ -3,6 +3,12 @@
 //! Use them module-qualified — `conditions::All`, `conditions::Not` — the way the
 //! variants of an enum read.
 
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::vocab::{Condition, QueryCtx};
 
 /// A fixed answer: `true` by default, or `false` when authored as "Never".
@@ -153,6 +159,12 @@ impl Condition for Flag {
 
 #[cfg(test)]
 mod tests {
+    use alloc::borrow::ToOwned;
+    use alloc::boxed::Box;
+
+    use alloc::string::String;
+    use alloc::vec;
+
     use super::*;
     use crate::context::{ChainFlags, TypeMap};
 
@@ -167,11 +179,11 @@ mod tests {
     /// A condition that counts its evaluations, for short-circuit proofs.
     struct Counting {
         answer: bool,
-        count: std::rc::Rc<std::cell::Cell<usize>>,
+        count: alloc::rc::Rc<core::cell::Cell<usize>>,
     }
     impl Counting {
-        fn new(answer: bool) -> (Self, std::rc::Rc<std::cell::Cell<usize>>) {
-            let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        fn new(answer: bool) -> (Self, alloc::rc::Rc<core::cell::Cell<usize>>) {
+            let count = alloc::rc::Rc::new(core::cell::Cell::new(0));
             (
                 Self {
                     answer,

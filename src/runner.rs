@@ -5,9 +5,36 @@
 //! frame, a test right after signaling a [`Completion`](crate::Completion)), and between
 //! calls the runner is inert data. It does not know whether its host is realtime.
 
-use std::any::Any;
-use std::collections::VecDeque;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use alloc::collections::VecDeque;
+use core::any::Any;
+#[cfg(feature = "std")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
+
+/// The payload a panicking step left behind.
+type Panic = Box<dyn Any + Send>;
+
+/// Runs a step body, catching a panic where the platform can.
+///
+/// Without `std` there is no unwinder, so the panic propagates and kills the process —
+/// exactly what `panic = "abort"` does to the `std` build.
+#[cfg(feature = "std")]
+fn isolate<T>(body: impl FnOnce() -> T) -> Result<T, Panic> {
+    catch_unwind(AssertUnwindSafe(body))
+}
+
+#[cfg(not(feature = "std"))]
+// The Result is always Ok here, and it must be: the two shapes have to match so the
+// runner's call sites do not care which one they got.
+#[allow(clippy::unnecessary_wraps)]
+fn isolate<T>(body: impl FnOnce() -> T) -> Result<T, Panic> {
+    Ok(body())
+}
 
 use crate::context::{ChainState, Context, TypeMap};
 use crate::source::{SequenceRef, SequenceSource};
@@ -225,15 +252,15 @@ pub enum StartError {
     AlreadyRunning,
 }
 
-impl std::fmt::Display for StartError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for StartError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::AlreadyRunning => f.write_str("a sequence chain is already running"),
         }
     }
 }
 
-impl std::error::Error for StartError {}
+impl core::error::Error for StartError {}
 
 /// An opaque hold the host acquires for the life of a chain — the save-gate seam.
 ///
@@ -505,7 +532,7 @@ impl Runner {
                             .as_mut()
                             .expect("checked above");
                         let mut ctx = Context::new(services, state, events, (sequence, index));
-                        catch_unwind(AssertUnwindSafe(|| machine.resume(&mut ctx)))
+                        isolate(|| machine.resume(&mut ctx))
                     };
                     match caught {
                         Ok(progress) => {
@@ -578,9 +605,7 @@ impl Runner {
                     let caught = {
                         let Chain { state, .. } = &mut *chain;
                         let mut ctx = Context::new(services, state, events, (sequence, index));
-                        catch_unwind(AssertUnwindSafe(|| {
-                            source.start_step(sequence, index, &mut ctx)
-                        }))
+                        isolate(|| source.start_step(sequence, index, &mut ctx))
                     };
                     match caught {
                         Ok(Some(progress)) => {
@@ -696,8 +721,14 @@ impl Runner {
 
 #[cfg(test)]
 mod tests {
+    use alloc::borrow::ToOwned;
+    use alloc::boxed::Box;
+    use alloc::format;
+    use alloc::rc::Rc;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
 
     use super::*;
     use crate::completion::Completion;
@@ -760,8 +791,10 @@ mod tests {
     }
 
     /// Panics when run.
+    #[cfg(feature = "std")]
     struct Panics;
 
+    #[cfg(feature = "std")]
     impl Step for Panics {
         fn summary(&self) -> String {
             "Panics".into()
@@ -1223,6 +1256,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")] // panic isolation needs an unwinder
     fn panicking_step_is_skipped_and_the_chain_continues() {
         let seen = seen();
         let mut library = Library::new();

@@ -1,5 +1,11 @@
 //! The data structure itself: [`Sequence`] and the arena that owns them, [`Library`].
 
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::context::Context;
 use crate::source::{SequenceFacts, SequenceRef, SequenceSource};
 use crate::step::{Progress, Step, StepFacts};
@@ -109,8 +115,8 @@ impl Sequence {
     }
 }
 
-impl std::fmt::Debug for Sequence {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Sequence {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Sequence({:?}) ", self.name)?;
         let mut list = f.debug_list();
         for step in self {
@@ -122,7 +128,7 @@ impl std::fmt::Debug for Sequence {
     }
 }
 
-impl std::ops::Index<usize> for Sequence {
+impl core::ops::Index<usize> for Sequence {
     type Output = dyn Step;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -157,7 +163,7 @@ impl FromIterator<Box<dyn Step>> for Sequence {
 }
 
 /// Iterator over a sequence's steps. Created by [`Sequence::iter`].
-pub struct Iter<'a>(std::slice::Iter<'a, Box<dyn Step>>);
+pub struct Iter<'a>(core::slice::Iter<'a, Box<dyn Step>>);
 
 impl<'a> Iterator for Iter<'a> {
     type Item = &'a dyn Step;
@@ -285,8 +291,14 @@ impl SequenceSource for Library {
 
 #[cfg(test)]
 mod tests {
+    use alloc::borrow::ToOwned;
+    use alloc::boxed::Box;
+    use alloc::format;
+
     use super::*;
     use crate::steps;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn logs(name: &str, lines: &[&str]) -> Sequence {
         let mut sequence = Sequence::new(name);

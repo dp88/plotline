@@ -1,5 +1,11 @@
 //! The step contract: what a sequence is made of.
 
+#[cfg(feature = "std")]
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+
+#[cfg(feature = "std")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::completion::Completion;
@@ -48,8 +54,8 @@ pub enum Progress {
     Resume(Box<dyn StepRun>),
 }
 
-impl std::fmt::Debug for Progress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Progress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Done => f.write_str("Done"),
             Self::Wait(c) => f.debug_tuple("Wait").field(c).finish(),
@@ -175,15 +181,9 @@ impl StepFacts {
     /// Gathers the facts, converting a panic in any accessor into a warning fact instead
     /// of propagating it.
     #[must_use]
+    #[cfg(feature = "std")]
     pub fn of(step: &dyn Step) -> Self {
-        catch_unwind(AssertUnwindSafe(|| Self {
-            summary: step.summary(),
-            warning: step.warning(),
-            flow: step.flow(),
-            delegates_to: step.delegates_to(),
-            enabled: step.is_enabled(),
-        }))
-        .unwrap_or_else(|_| Self {
+        catch_unwind(AssertUnwindSafe(|| Self::gather(step))).unwrap_or_else(|_| Self {
             summary: "<step panicked describing itself>".to_owned(),
             warning: Some("This step panicked while describing itself.".to_owned()),
             flow: Flow::Continue,
@@ -191,11 +191,38 @@ impl StepFacts {
             enabled: true,
         })
     }
+
+    /// Gathers the facts.
+    ///
+    /// Without `std` there is no unwinder to catch a panicking accessor, so a
+    /// half-authored step takes the caller down with it — the same bargain
+    /// `panic = "abort"` makes.
+    #[must_use]
+    #[cfg(not(feature = "std"))]
+    pub fn of(step: &dyn Step) -> Self {
+        Self::gather(step)
+    }
+
+    fn gather(step: &dyn Step) -> Self {
+        Self {
+            summary: step.summary(),
+            warning: step.warning(),
+            flow: step.flow(),
+            delegates_to: step.delegates_to(),
+            enabled: step.is_enabled(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+
+    use alloc::boxed::Box;
+
     use super::*;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     struct Fine;
     impl Step for Fine {
@@ -210,7 +237,9 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "std")]
     struct PanicsDescribing;
+    #[cfg(feature = "std")]
     impl Step for PanicsDescribing {
         fn summary(&self) -> String {
             panic!("half-authored")
@@ -242,6 +271,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")] // panic isolation needs an unwinder
     fn facts_survive_a_panicking_accessor() {
         // "Authored content is allowed to be half-finished; a property that throws on it
         // must not take the inspector down with it."

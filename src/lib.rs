@@ -20,6 +20,35 @@
 //! — signals it, and the host calls [`Runner::advance`] whenever that may have happened.
 //! This crate is equally at home under a game loop, a CLI, or a unit test.
 //!
+//! If that shape feels familiar: this is a [`Poll`](core::task::Poll)-shaped pull loop
+//! whose waker is your game loop. [`Runner::advance`] answers [`Poll::Pending`](core::task::Poll::Pending) while the
+//! chain is in flight, and [`Progress`] is what one step answers with — finished,
+//! waiting, or redirecting.
+//!
+//! # Writing a step
+//!
+//! Usually a closure. [`steps::run`] takes a name and a body, and the body answers with
+//! whatever fits — nothing at all to finish now, a [`Completion`] to wait on, or a
+//! [`Progress`] when it needs control flow:
+//!
+//! ```
+//! use plotline::{Sequence, steps};
+//!
+//! let sequence = Sequence::new("greeting")
+//!     .with_step(steps::run("Greet the elder", |_ctx| println!("Hello.")))
+//!     .with_step(steps::run("Remember it", |ctx| ctx.set_flag("greeted", true)));
+//! ```
+//!
+//! Implementing [`Step`] by hand is for steps that carry authored data — the ones an
+//! editor writes and a save file holds.
+//!
+//! # Diagnostics
+//!
+//! This crate owns no logger, which is why it has no dependencies. The runner reports
+//! what it did as [`RunnerEvent`]s; the host drains them with [`Runner::drain_events`]
+//! and forwards them wherever it likes. Steps say things with
+//! [`Context::note`]. A host that never drains sees nothing — that is the trade.
+//!
 //! # Example
 //!
 //! ```
@@ -64,14 +93,25 @@
 //! );
 //! ```
 //!
-//! This crate requires `panic = "unwind"`: the runner isolates a panicking step
-//! (report it, skip it, continue), which `panic = "abort"` would turn into process
-//! death.
+//! # Features
+//!
+//! `std` (default) buys **panic isolation**: the runner catches a panicking step, reports
+//! it, and carries on. That needs an unwinder, so `panic = "abort"` turns the isolation
+//! into process death — never set it in a profile that builds this crate.
+//!
+//! Without it the crate is `#![no_std]` (it still needs `alloc`) and makes the same
+//! bargain `panic = "abort"` does: a panicking step takes the process with it, because
+//! bare metal has no unwinder to offer.
 
 #![warn(missing_docs)]
 // A `match` over an Option whose arms both do real work reads better than `if let`,
 // and every site clippy flags here logs on the missing side.
 #![allow(clippy::single_match_else)]
+#![no_std]
+
+extern crate alloc;
+#[cfg(any(test, feature = "std"))]
+extern crate std;
 
 mod completion;
 mod context;

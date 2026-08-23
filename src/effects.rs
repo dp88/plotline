@@ -4,6 +4,10 @@
 //! volume — so it has no event stream to speak into. An effect reports authoring problems
 //! through [`warning`](crate::Effect::warning) and otherwise stays quiet.
 
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+
 use crate::vocab::{Effect, EffectCtx};
 
 /// Sets a chain-local blackboard flag — the interlock that lets a dialog choice steer the
@@ -52,6 +56,7 @@ impl Effect for SetFlag {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::context::{ChainFlags, TypeMap};
 

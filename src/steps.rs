@@ -9,6 +9,12 @@
 //! a [`Progress`], so a step can be tested by what it answers. Note there is no timed wait here — time belongs to the
 //! host, and a "wait N seconds" step lives in the layer that owns a clock.
 
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::context::Context;
 use crate::source::SequenceRef;
 use crate::step::{Flow, IntoProgress, Progress, Step};
@@ -308,6 +314,11 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    use alloc::boxed::Box;
+
+    use alloc::vec;
+
     use super::*;
     use crate::conditions;
     use crate::context::{ChainState, TypeMap};

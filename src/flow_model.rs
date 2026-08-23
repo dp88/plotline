@@ -4,7 +4,11 @@
 //! questions ("is this step reachable?", "does this branch resolve?") are about the data,
 //! not about any editor, so they are answerable and testable without one.
 
-use std::collections::HashSet;
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use alloc::collections::BTreeSet;
 
 use crate::source::{SequenceFacts, SequenceRef};
 use crate::step::Flow;
@@ -108,7 +112,7 @@ impl FlowModel {
                     } else if declared == Flow::End {
                         Reach::Ends
                     } else if facts.delegates_to.is_some() {
-                        let mut visiting = HashSet::from([sequence]);
+                        let mut visiting = BTreeSet::from([sequence]);
                         Self::resolve_delegate(source, facts.delegates_to, &mut visiting)
                     } else {
                         Reach::Continues
@@ -136,7 +140,7 @@ impl FlowModel {
     fn resolve_delegate(
         source: &mut dyn SequenceFacts,
         target: Option<SequenceRef>,
-        visiting: &mut HashSet<SequenceRef>,
+        visiting: &mut BTreeSet<SequenceRef>,
     ) -> Reach {
         let Some(target) = target else {
             return Reach::MayEnd; // nothing to chase; the claim stays a claim
@@ -273,11 +277,15 @@ impl FlowModel {
 
 #[cfg(test)]
 mod tests {
+
+    use alloc::string::String;
+
     use super::*;
     use crate::context::Context;
     use crate::sequence::{Library, Sequence};
     use crate::step::{Progress, Step};
     use crate::steps;
+    use alloc::vec::Vec;
 
     /// Wraps a step and reports it disabled — the headless stand-in for the authoring
     /// toggle.

@@ -4,6 +4,9 @@
 //! seam that lets any other storage — a database, an asset, a test double — act as
 //! sequences without copying into a second representation.
 
+use alloc::format;
+use alloc::string::String;
+
 use crate::context::Context;
 use crate::step::{Progress, StepFacts};
 
@@ -20,7 +23,7 @@ use crate::step::{Progress, StepFacts};
 /// A handle carries no record of who minted it. Handing one to a different source is not
 /// caught: it resolves to whatever that source has under the same payload, or to nothing.
 /// Drive one chain from one source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SequenceRef(u64);
 
 impl SequenceRef {
@@ -77,6 +80,7 @@ pub trait SequenceSource: SequenceFacts {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
