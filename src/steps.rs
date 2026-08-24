@@ -121,6 +121,53 @@ impl Step for Branch {
     }
 }
 
+/// Ends the current chain and optionally starts another sequence.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Goto {
+    /// Sequence to start, or `None` to finish the chain.
+    pub sequence: Option<SequenceRef>,
+}
+
+impl Goto {
+    /// Creates a jump to `sequence`.
+    #[must_use]
+    pub const fn to(sequence: SequenceRef) -> Self {
+        Self {
+            sequence: Some(sequence),
+        }
+    }
+
+    /// Creates a step that finishes the chain.
+    #[must_use]
+    pub const fn end() -> Self {
+        Self { sequence: None }
+    }
+}
+
+/// Creates a step that jumps to `sequence`.
+#[must_use]
+pub const fn goto(sequence: SequenceRef) -> Goto {
+    Goto::to(sequence)
+}
+
+impl Step for Goto {
+    fn summary(&self) -> String {
+        format!("Goto {}", Branch::target_name(self.sequence))
+    }
+
+    fn flow(&self) -> Flow {
+        Flow::End
+    }
+
+    fn delegates_to(&self) -> Option<SequenceRef> {
+        self.sequence
+    }
+
+    fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+        Progress::Goto(self.sequence)
+    }
+}
+
 /// Runs another sequence as a subroutine.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Call {
@@ -361,6 +408,24 @@ mod tests {
     #[test]
     fn stop_ends_the_chain() {
         let (progress, _) = with_ctx(|ctx| Stop.start(ctx));
+        assert!(matches!(progress, Progress::Goto(None)));
+    }
+
+    #[test]
+    fn goto_jumps_to_a_sequence_and_reports_end_flow() {
+        let target = SequenceRef::from_raw(8);
+        let step = goto(target);
+        assert_eq!(step.summary(), "Goto seq#8");
+        assert_eq!(step.flow(), Flow::End);
+        assert_eq!(step.delegates_to(), Some(target));
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
+        assert!(matches!(progress, Progress::Goto(Some(r)) if r == target));
+    }
+
+    #[test]
+    fn goto_end_finishes_the_chain() {
+        let step = Goto::end();
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
         assert!(matches!(progress, Progress::Goto(None)));
     }
 
