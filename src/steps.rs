@@ -121,6 +121,64 @@ impl Step for Branch {
     }
 }
 
+/// Runs a step only when a condition is true.
+pub struct When {
+    /// Condition that controls execution.
+    pub condition: Box<dyn Condition>,
+    /// Step to run when the condition is true.
+    pub step: Box<dyn Step>,
+}
+
+/// Creates a conditional step.
+#[must_use]
+pub fn when(condition: impl Condition + 'static, step: impl Step + 'static) -> When {
+    When {
+        condition: Box::new(condition),
+        step: Box::new(step),
+    }
+}
+
+impl Step for When {
+    fn summary(&self) -> String {
+        format!(
+            "When ({}) → {}",
+            self.condition.summary(),
+            self.step.summary()
+        )
+    }
+
+    fn warning(&self) -> Option<String> {
+        self.condition
+            .warning()
+            .map(|warning| format!("Condition: {warning}"))
+            .or_else(|| {
+                self.step
+                    .warning()
+                    .map(|warning| format!("Step: {warning}"))
+            })
+    }
+
+    fn flow(&self) -> Flow {
+        self.step.flow()
+    }
+
+    fn delegates_to(&self) -> Option<SequenceRef> {
+        self.step.delegates_to()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.step.is_enabled()
+    }
+
+    fn start(&self, ctx: &mut Context<'_>) -> Progress {
+        if ctx.eval(self.condition.as_ref()) {
+            self.step.start(ctx)
+        } else {
+            Progress::Done
+        }
+    }
+}
+
 /// Ends the current chain and optionally starts another sequence.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Goto {
@@ -402,6 +460,21 @@ mod tests {
             Branch::default().warning().is_none(),
             "no condition, no warning"
         );
+    }
+
+    #[test]
+    fn when_skips_the_inner_step_when_false() {
+        let step = when(conditions::Always { value: false }, Stop);
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
+        assert!(matches!(progress, Progress::Done));
+    }
+
+    #[test]
+    fn when_runs_the_inner_step_when_true() {
+        let step = when(conditions::Always::default(), Stop);
+        assert_eq!(step.flow(), Flow::End);
+        let (progress, _) = with_ctx(|ctx| step.start(ctx));
+        assert!(matches!(progress, Progress::Goto(None)));
     }
 
     #[test]
