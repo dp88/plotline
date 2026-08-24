@@ -111,6 +111,14 @@ impl Condition for Not {
     }
 }
 
+/// Creates an inverted condition.
+#[must_use]
+pub fn not(condition: impl Condition + 'static) -> Not {
+    Not {
+        inner: Some(Box::new(condition)),
+    }
+}
+
 /// True when every inner condition is true. An empty list is true.
 #[derive(Default)]
 pub struct All {
@@ -128,6 +136,14 @@ impl Condition for All {
     }
 }
 
+/// Creates a condition that requires every supplied condition.
+#[must_use]
+pub fn all(conditions: impl IntoIterator<Item = Box<dyn Condition>>) -> All {
+    All {
+        conditions: conditions.into_iter().collect(),
+    }
+}
+
 /// True when any inner condition is true. An empty list is false.
 #[derive(Default)]
 pub struct Any {
@@ -142,6 +158,14 @@ impl Condition for Any {
 
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
         self.conditions.iter().any(|c| c.evaluate(query))
+    }
+}
+
+/// Creates a condition that accepts any supplied condition.
+#[must_use]
+pub fn any(conditions: impl IntoIterator<Item = Box<dyn Condition>>) -> Any {
+    Any {
+        conditions: conditions.into_iter().collect(),
     }
 }
 
@@ -163,6 +187,27 @@ impl Flag {
             expected: true,
         }
     }
+
+    /// Creates a condition that expects the flag to be clear.
+    #[must_use]
+    pub fn is_clear(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            expected: false,
+        }
+    }
+}
+
+/// Creates a condition that expects the flag to be set.
+#[must_use]
+pub fn flag(name: impl Into<String>) -> Flag {
+    Flag::is_set(name)
+}
+
+/// Creates a condition that expects the flag to be clear.
+#[must_use]
+pub fn flag_clear(name: impl Into<String>) -> Flag {
+    Flag::is_clear(name)
 }
 
 impl Condition for Flag {

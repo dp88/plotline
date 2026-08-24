@@ -47,6 +47,29 @@ impl Default for SetFlag {
     }
 }
 
+impl SetFlag {
+    /// Creates a flag-setting step.
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: bool) -> Self {
+        Self {
+            name: name.into(),
+            value,
+        }
+    }
+
+    /// Creates a step that sets a flag.
+    #[must_use]
+    pub fn set(name: impl Into<String>) -> Self {
+        Self::new(name, true)
+    }
+
+    /// Creates a step that clears a flag.
+    #[must_use]
+    pub fn clear(name: impl Into<String>) -> Self {
+        Self::new(name, false)
+    }
+}
+
 impl Step for SetFlag {
     fn summary(&self) -> String {
         format!("Set flag '{}' to {}", self.name, self.value)
@@ -82,6 +105,20 @@ impl Branch {
             Some(r) => format!("seq#{:x}", r.to_raw()),
             None => "(end)".to_owned(),
         }
+    }
+}
+
+/// Creates a conditional branch.
+#[must_use]
+pub fn branch(
+    condition: impl Condition + 'static,
+    if_true: Option<SequenceRef>,
+    if_false: Option<SequenceRef>,
+) -> Branch {
+    Branch {
+        condition: Some(Box::new(condition)),
+        if_true,
+        if_false,
     }
 }
 
@@ -233,6 +270,16 @@ pub struct Call {
     pub sequence: Option<SequenceRef>,
 }
 
+impl Call {
+    /// Creates a call to `sequence`.
+    #[must_use]
+    pub const fn to(sequence: SequenceRef) -> Self {
+        Self {
+            sequence: Some(sequence),
+        }
+    }
+}
+
 impl Step for Call {
     fn summary(&self) -> String {
         format!("Call {}", Branch::target_name(self.sequence))
@@ -280,6 +327,12 @@ impl Step for Return {
 /// Ends the chain immediately.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stop;
+
+/// Creates a step that stops the chain.
+#[must_use]
+pub const fn stop() -> Stop {
+    Stop
+}
 
 impl Step for Stop {
     fn summary(&self) -> String {
@@ -460,6 +513,18 @@ mod tests {
             Branch::default().warning().is_none(),
             "no condition, no warning"
         );
+    }
+
+    #[test]
+    fn constructors_build_common_steps() {
+        let target = SequenceRef::from_raw(3);
+        let branch = branch(conditions::Always::default(), Some(target), None);
+        assert_eq!(branch.if_true, Some(target));
+        assert_eq!(Call::to(target).sequence, Some(target));
+        assert_eq!(goto(target).sequence, Some(target));
+        assert_eq!(SetFlag::set("accepted").value, true);
+        assert_eq!(SetFlag::clear("accepted").value, false);
+        assert_eq!(stop().summary(), "Stop");
     }
 
     #[test]

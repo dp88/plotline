@@ -24,6 +24,41 @@ impl Default for SetFlag {
     }
 }
 
+impl SetFlag {
+    /// Creates a flag-setting effect.
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: bool) -> Self {
+        Self {
+            name: name.into(),
+            value,
+        }
+    }
+
+    /// Creates an effect that sets a flag.
+    #[must_use]
+    pub fn set(name: impl Into<String>) -> Self {
+        Self::new(name, true)
+    }
+
+    /// Creates an effect that clears a flag.
+    #[must_use]
+    pub fn clear(name: impl Into<String>) -> Self {
+        Self::new(name, false)
+    }
+}
+
+/// Creates an effect that sets a flag.
+#[must_use]
+pub fn set_flag(name: impl Into<String>) -> SetFlag {
+    SetFlag::set(name)
+}
+
+/// Creates an effect that clears a flag.
+#[must_use]
+pub fn clear_flag(name: impl Into<String>) -> SetFlag {
+    SetFlag::clear(name)
+}
+
 impl Effect for SetFlag {
     fn summary(&self) -> String {
         format!("Set flag '{}' to {}", self.name, self.value)
