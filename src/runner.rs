@@ -458,16 +458,16 @@ impl Runner {
                 return Drive::Finished;
             }
 
-            match source.step_facts(sequence, index) {
+            match source.step_enabled(sequence, index) {
                 None => {
                     Self::skip(events, sequence, index, SkipReason::Missing);
                     Self::top(chain).next();
                 }
-                Some(facts) if !facts.enabled => {
+                Some(false) => {
                     Self::skip(events, sequence, index, SkipReason::Disabled);
                     Self::top(chain).next();
                 }
-                Some(_facts) => {
+                Some(true) => {
                     events.record(RunnerEvent::StepStarted { sequence, index });
                     let caught = {
                         let Chain { state, .. } = &mut *chain;
@@ -611,6 +611,27 @@ mod tests {
         }
         fn start(&self, _ctx: &mut Context<'_>) -> Progress {
             self.seen.borrow_mut().push(self.label);
+            Progress::Done
+        }
+    }
+
+    /// Tracks descriptive accessors that should stay off the runtime path.
+    struct FactsCostProbe {
+        descriptions: Rc<Cell<usize>>,
+    }
+
+    impl Step for FactsCostProbe {
+        fn summary(&self) -> String {
+            self.descriptions.set(self.descriptions.get() + 1);
+            "facts-cost".to_owned()
+        }
+
+        fn warning(&self) -> Option<String> {
+            self.descriptions.set(self.descriptions.get() + 1);
+            None
+        }
+
+        fn start(&self, _ctx: &mut Context<'_>) -> Progress {
             Progress::Done
         }
     }
@@ -1491,6 +1512,22 @@ mod tests {
             Poll::Ready(Outcome::Finished)
         );
         assert!(runner.drain_events().next().is_none());
+    }
+
+    #[test]
+    fn library_runtime_checks_do_not_collect_full_step_facts() {
+        let descriptions = Rc::new(Cell::new(0));
+        let mut library = Library::new();
+        let sequence = library.insert(Sequence::new("runtime").with_step(FactsCostProbe {
+            descriptions: descriptions.clone(),
+        }));
+        let mut runner = Runner::default();
+        runner.start(sequence, None).unwrap();
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
+        assert_eq!(descriptions.get(), 0);
     }
 
     /// Calls a subroutine and counts later resumes.

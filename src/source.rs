@@ -32,6 +32,13 @@ pub trait SequenceFacts {
     /// Returns one step's facts, or `None` if the sequence or step is missing.
     fn step_facts(&mut self, sequence: SequenceRef, index: usize) -> Option<StepFacts>;
 
+    /// Returns whether one step is enabled, or `None` if it is missing.
+    ///
+    /// The default implementation derives the answer from [`Self::step_facts`].
+    fn step_enabled(&mut self, sequence: SequenceRef, index: usize) -> Option<bool> {
+        self.step_facts(sequence, index).map(|facts| facts.enabled)
+    }
+
     /// Returns a display name.
     fn name(&mut self, sequence: SequenceRef) -> String {
         format!("seq#{:x}", sequence.to_raw())

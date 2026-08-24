@@ -134,6 +134,16 @@ pub struct StepFacts {
 }
 
 impl StepFacts {
+    /// Reads only whether a step is enabled, isolating panics when `std` is enabled.
+    pub(crate) fn enabled_of(step: &dyn Step) -> bool {
+        #[cfg(feature = "std")]
+        {
+            catch_unwind(AssertUnwindSafe(|| step.is_enabled())).unwrap_or(true)
+        }
+        #[cfg(not(feature = "std"))]
+        step.is_enabled()
+    }
+
     /// Collects a step's facts.
     #[must_use]
     pub fn of(step: &dyn Step) -> Self {

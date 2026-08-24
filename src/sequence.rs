@@ -313,6 +313,10 @@ impl SequenceFacts for Library {
         self.get(sequence)?.get(index).map(StepFacts::of)
     }
 
+    fn step_enabled(&mut self, sequence: SequenceRef, index: usize) -> Option<bool> {
+        self.get(sequence)?.get(index).map(StepFacts::enabled_of)
+    }
+
     fn name(&mut self, sequence: SequenceRef) -> String {
         match self.get(sequence) {
             Some(s) if !s.name().is_empty() => s.name().to_owned(),
