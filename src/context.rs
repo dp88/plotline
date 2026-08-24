@@ -154,6 +154,17 @@ impl<'a> Context<'a> {
         self.services
     }
 
+    /// Returns the host service of type `T`.
+    #[must_use]
+    pub fn service<T: Any>(&self) -> Option<&T> {
+        self.services.get::<T>()
+    }
+
+    /// Returns mutable access to the host service of type `T`.
+    pub fn service_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.services.get_mut::<T>()
+    }
+
     /// Returns the opaque chain instigator.
     #[must_use]
     pub fn instigator(&self) -> Option<&dyn Any> {
@@ -261,5 +272,42 @@ mod tests {
         let ctx = Context::new(&mut services, &mut state, &mut events, HERE);
         assert_eq!(ctx.instigator_as::<i32>(), Some(&42));
         assert!(ctx.instigator_as::<String>().is_none());
+    }
+
+    #[test]
+    fn context_exposes_typed_service_helpers() {
+        let mut services = TypeMap::new();
+        services.insert(7_u32);
+        let mut state = ChainState::default();
+        let mut events = Events::default();
+        let mut ctx = Context::new(&mut services, &mut state, &mut events, HERE);
+        assert_eq!(ctx.service::<u32>(), Some(&7));
+        *ctx.service_mut::<u32>().unwrap() = 8;
+        assert_eq!(ctx.service::<u32>(), Some(&8));
+    }
+
+    #[test]
+    fn query_and_effect_contexts_expose_targets_and_services() {
+        let target = 42_i32;
+        let mut caps = TypeMap::new();
+        caps.insert(7_u32);
+
+        let query = QueryCtx {
+            target: Some(&target),
+            chain: None,
+            caps: &caps,
+        };
+        assert_eq!(query.target_as::<i32>(), Some(&42));
+        assert_eq!(query.service::<u32>(), Some(&7));
+
+        let mut effect = EffectCtx {
+            target: Some(&target),
+            chain: None,
+            caps: &mut caps,
+        };
+        assert_eq!(effect.target_as::<i32>(), Some(&42));
+        assert_eq!(effect.service::<u32>(), Some(&7));
+        *effect.service_mut::<u32>().unwrap() = 8;
+        assert_eq!(effect.service::<u32>(), Some(&8));
     }
 }

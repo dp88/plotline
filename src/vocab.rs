@@ -16,6 +16,20 @@ pub struct QueryCtx<'a> {
     pub caps: &'a TypeMap,
 }
 
+impl QueryCtx<'_> {
+    /// Returns the query target as type `T`.
+    #[must_use]
+    pub fn target_as<T: Any>(&self) -> Option<&T> {
+        self.target.and_then(|target| target.downcast_ref::<T>())
+    }
+
+    /// Returns the host service of type `T`.
+    #[must_use]
+    pub fn service<T: Any>(&self) -> Option<&T> {
+        self.caps.get::<T>()
+    }
+}
+
 /// Mutable context for an [`Effect`].
 pub struct EffectCtx<'a> {
     /// Effect target.
@@ -24,6 +38,25 @@ pub struct EffectCtx<'a> {
     pub chain: Option<&'a mut ChainFlags>,
     /// Services available to the effect.
     pub caps: &'a mut TypeMap,
+}
+
+impl EffectCtx<'_> {
+    /// Returns the effect target as type `T`.
+    #[must_use]
+    pub fn target_as<T: Any>(&self) -> Option<&T> {
+        self.target.and_then(|target| target.downcast_ref::<T>())
+    }
+
+    /// Returns the host service of type `T`.
+    #[must_use]
+    pub fn service<T: Any>(&self) -> Option<&T> {
+        self.caps.get::<T>()
+    }
+
+    /// Returns mutable access to the host service of type `T`.
+    pub fn service_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.caps.get_mut::<T>()
+    }
 }
 
 /// A yes/no query.
