@@ -203,6 +203,22 @@ impl Library {
             .get_mut(usize::try_from(sequence.to_raw()).ok()?)
     }
 
+    /// Finds the first sequence with `name`.
+    #[must_use]
+    pub fn find(&self, name: &str) -> Option<(SequenceRef, &Sequence)> {
+        self.sequences
+            .iter()
+            .enumerate()
+            .find(|(_, sequence)| sequence.name() == name)
+            .map(|(index, sequence)| (SequenceRef::from_raw(index as u64), sequence))
+    }
+
+    /// Finds the handle of the first sequence with `name`.
+    #[must_use]
+    pub fn ref_by_name(&self, name: &str) -> Option<SequenceRef> {
+        self.find(name).map(|(sequence, _)| sequence)
+    }
+
     /// Returns the number of sequences.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -330,6 +346,9 @@ mod tests {
         assert!(library.get(SequenceRef::from_raw(99)).is_none());
         assert_eq!(library.len(), 2);
         assert_eq!(library.iter().count(), 2);
+        assert_eq!(library.find("b").map(|(handle, _)| handle), Some(b));
+        assert_eq!(library.ref_by_name("a"), Some(a));
+        assert!(library.find("missing").is_none());
     }
 
     #[test]
