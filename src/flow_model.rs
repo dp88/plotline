@@ -49,6 +49,7 @@ enum Reach {
 struct Row {
     declared: Flow,
     delegates: Option<SequenceRef>,
+    references: Vec<SequenceRef>,
     resolved: Reach,
     enabled: bool,
     missing: bool,
@@ -71,6 +72,7 @@ impl FlowModel {
                 None => Row {
                     declared: Flow::Continue,
                     delegates: None,
+                    references: Vec::new(),
                     resolved: Reach::Continues,
                     enabled: true,
                     missing: true,
@@ -78,19 +80,21 @@ impl FlowModel {
                 },
                 Some(facts) => {
                     let declared = facts.flow;
+                    let references = facts.references;
                     let resolved = if !facts.enabled {
                         Reach::Continues
                     } else if declared == Flow::End {
                         Reach::Ends
-                    } else if facts.delegates_to.is_some() {
+                    } else if !references.is_empty() {
                         let mut visiting = BTreeSet::from([sequence]);
-                        Self::resolve_delegate(source, facts.delegates_to, &mut visiting)
+                        Self::resolve_references(source, &references, &mut visiting)
                     } else {
                         Reach::Continues
                     };
                     Row {
                         declared,
                         delegates: facts.delegates_to,
+                        references,
                         resolved,
                         enabled: facts.enabled,
                         missing: false,
@@ -103,6 +107,31 @@ impl FlowModel {
             .iter()
             .position(|row| row.enabled && !row.missing && row.resolved == Reach::Ends);
         Self { rows, terminal }
+    }
+
+    /// Resolves a delegated sequence.
+    fn resolve_references(
+        source: &mut dyn SequenceFacts,
+        references: &[SequenceRef],
+        visiting: &mut BTreeSet<SequenceRef>,
+    ) -> Reach {
+        let mut saw_end = false;
+        let mut saw_may_end = false;
+        let mut saw_continue = false;
+        for target in references {
+            match Self::resolve_delegate(source, Some(*target), visiting) {
+                Reach::Ends => saw_end = true,
+                Reach::MayEnd => saw_may_end = true,
+                Reach::Continues => saw_continue = true,
+            }
+        }
+        if saw_may_end || (saw_end && saw_continue) {
+            Reach::MayEnd
+        } else if saw_end {
+            Reach::Ends
+        } else {
+            Reach::Continues
+        }
     }
 
     /// Resolves a delegated sequence.
@@ -132,8 +161,8 @@ impl FlowModel {
                 if facts.flow == Flow::End {
                     return Reach::Ends;
                 }
-                if facts.delegates_to.is_some() {
-                    match Self::resolve_delegate(source, facts.delegates_to, visiting) {
+                if !facts.references.is_empty() {
+                    match Self::resolve_references(source, &facts.references, visiting) {
                         Reach::Ends => return Reach::Ends,
                         Reach::MayEnd => undecided = true,
                         Reach::Continues => {}
@@ -229,7 +258,7 @@ impl FlowModel {
     pub fn node(&self, index: usize) -> RailNode {
         let row = &self.rows[index];
         RailNode {
-            shape: if row.declared == Flow::End || row.delegates.is_some() {
+            shape: if row.declared == Flow::End || !row.references.is_empty() {
                 RailShape::Diamond
             } else {
                 RailShape::Circle

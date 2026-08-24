@@ -4,6 +4,7 @@
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -101,6 +102,11 @@ pub trait Step {
         None
     }
 
+    /// Returns every sequence referenced by this step.
+    fn references(&self) -> Vec<SequenceRef> {
+        self.delegates_to().into_iter().collect()
+    }
+
     /// Returns whether the runner can execute this step.
     fn is_enabled(&self) -> bool {
         true
@@ -121,6 +127,8 @@ pub struct StepFacts {
     pub flow: Flow,
     /// The delegated sequence.
     pub delegates_to: Option<SequenceRef>,
+    /// Every sequence referenced by the step.
+    pub references: Vec<SequenceRef>,
     /// Whether the step is enabled.
     pub enabled: bool,
 }
@@ -136,6 +144,7 @@ impl StepFacts {
                 warning: Some("This step panicked while describing itself.".to_owned()),
                 flow: Flow::Continue,
                 delegates_to: None,
+                references: Vec::new(),
                 enabled: true,
             })
         }
@@ -149,6 +158,7 @@ impl StepFacts {
             warning: step.warning(),
             flow: step.flow(),
             delegates_to: step.delegates_to(),
+            references: step.references(),
             enabled: step.is_enabled(),
         }
     }
@@ -200,6 +210,7 @@ mod tests {
         assert!(steps[0].is_enabled());
         assert!(steps[0].warning().is_none());
         assert!(steps[0].delegates_to().is_none());
+        assert!(steps[0].references().is_empty());
     }
 
     #[test]
@@ -207,6 +218,7 @@ mod tests {
         let facts = StepFacts::of(&Fine);
         assert_eq!(facts.summary, "fine");
         assert_eq!(facts.flow, Flow::Continue);
+        assert!(facts.references.is_empty());
         assert!(facts.enabled);
     }
 

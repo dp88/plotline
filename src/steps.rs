@@ -154,6 +154,10 @@ impl Step for Branch {
         Flow::End
     }
 
+    fn references(&self) -> Vec<SequenceRef> {
+        self.if_true.into_iter().chain(self.if_false).collect()
+    }
+
     fn start(&self, ctx: &mut Context<'_>) -> Progress {
         let took_true = match &self.condition {
             Some(condition) => ctx.eval(condition.as_ref()),
@@ -210,6 +214,10 @@ impl Step for When {
 
     fn delegates_to(&self) -> Option<SequenceRef> {
         self.step.delegates_to()
+    }
+
+    fn references(&self) -> Vec<SequenceRef> {
+        self.step.references()
     }
 
     fn is_enabled(&self) -> bool {
@@ -478,6 +486,7 @@ mod tests {
     use crate::context::{ChainState, TypeMap};
     use crate::runner::Events;
     use crate::sequence::Sequence;
+    use crate::step::StepFacts;
 
     fn with_ctx<R>(f: impl FnOnce(&mut Context<'_>) -> R) -> (R, ChainState) {
         let mut services = TypeMap::new();
@@ -537,6 +546,20 @@ mod tests {
             if_false: None,
         };
         assert!(branch.warning().unwrap().contains("Condition:"));
+    }
+
+    #[test]
+    fn branch_facts_report_both_targets() {
+        let branch = Branch {
+            condition: None,
+            if_true: Some(SequenceRef::from_raw(1)),
+            if_false: Some(SequenceRef::from_raw(2)),
+        };
+        let facts = StepFacts::of(&branch);
+        assert_eq!(
+            facts.references,
+            vec![SequenceRef::from_raw(1), SequenceRef::from_raw(2)]
+        );
     }
 
     #[test]
