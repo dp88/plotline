@@ -30,6 +30,8 @@ pub enum Progress {
     Wait(Completion),
     /// Runs another sequence as a subroutine.
     Call(SequenceRef),
+    /// Returns from the current subroutine, or finishes the chain at the root.
+    Return,
     /// Ends the current chain and optionally starts `target`.
     Goto(Option<SequenceRef>),
     /// Returns a per-run state machine.
@@ -42,6 +44,7 @@ impl core::fmt::Debug for Progress {
             Self::Done => f.write_str("Done"),
             Self::Wait(c) => f.debug_tuple("Wait").field(c).finish(),
             Self::Call(r) => f.debug_tuple("Call").field(r).finish(),
+            Self::Return => f.write_str("Return"),
             Self::Goto(r) => f.debug_tuple("Goto").field(r).finish(),
             Self::Resume(_) => f.write_str("Resume(..)"),
         }

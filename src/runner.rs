@@ -526,6 +526,14 @@ impl Runner {
                 }
                 chain.frames.push(Frame::new(target));
             }
+            Progress::Return => {
+                if chain.frames.len() > 1 {
+                    chain.frames.pop();
+                    *resume_current = true;
+                } else {
+                    return Some(Drive::Finished);
+                }
+            }
             Progress::Goto(target) => {
                 let Some(next) = target else {
                     return Some(Drive::Finished);
@@ -1586,6 +1594,32 @@ mod tests {
             Poll::Ready(Outcome::Finished)
         );
         assert_eq!(resumes_after_call.get(), 1);
+    }
+
+    #[test]
+    fn return_exits_a_subroutine_and_resumes_the_caller() {
+        let seen = seen();
+        let mut library = Library::new();
+        let inner = library.insert(
+            Sequence::new("inner")
+                .with_step(probe("inner", &seen))
+                .with_step(steps::Return)
+                .with_step(probe("never", &seen)),
+        );
+        let outer = library.insert(
+            Sequence::new("outer")
+                .with_step(steps::Call {
+                    sequence: Some(inner),
+                })
+                .with_step(probe("after", &seen)),
+        );
+        let mut runner = Runner::default();
+        runner.start(outer, None).unwrap();
+        assert_eq!(
+            advance(&mut runner, &mut library),
+            Poll::Ready(Outcome::Finished)
+        );
+        assert_eq!(*seen.borrow(), vec!["inner", "after"]);
     }
 
     #[test]

@@ -201,6 +201,24 @@ impl Step for Call {
     }
 }
 
+/// Returns from the current subroutine.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Return;
+
+impl Step for Return {
+    fn summary(&self) -> String {
+        "Return".to_owned()
+    }
+
+    fn flow(&self) -> Flow {
+        Flow::End
+    }
+
+    fn start(&self, _ctx: &mut Context<'_>) -> Progress {
+        Progress::Return
+    }
+}
+
 /// Ends the chain immediately.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stop;
@@ -403,6 +421,13 @@ mod tests {
         assert_eq!(call.delegates_to(), Some(SequenceRef::from_raw(7)));
         let (progress, _) = with_ctx(|ctx| call.start(ctx));
         assert!(matches!(progress, Progress::Call(r) if r == SequenceRef::from_raw(7)));
+    }
+
+    #[test]
+    fn return_ends_the_current_subroutine() {
+        let (progress, _) = with_ctx(|ctx| Return.start(ctx));
+        assert!(matches!(progress, Progress::Return));
+        assert_eq!(Return.flow(), Flow::End);
     }
 
     #[test]
