@@ -31,6 +31,57 @@ impl Condition for Always {
     }
 }
 
+/// A condition created from a closure.
+pub struct Check<F> {
+    name: String,
+    body: F,
+}
+
+/// Wraps a closure as a condition.
+///
+/// The closure receives the read-only query context and returns the condition's answer.
+///
+/// ```
+/// use plotline::{Condition, QueryCtx, TypeMap, conditions};
+///
+/// let caps = TypeMap::new();
+/// let condition = conditions::check("Has a target", |query| query.target.is_some());
+/// assert!(!condition.evaluate(&QueryCtx {
+///     target: None,
+///     chain: None,
+///     caps: &caps,
+/// }));
+/// ```
+pub fn check<F>(name: impl Into<String>, body: F) -> Check<F>
+where
+    F: for<'a, 'b> Fn(&'a QueryCtx<'b>) -> bool,
+{
+    Check {
+        name: name.into(),
+        body,
+    }
+}
+
+impl<F> Condition for Check<F>
+where
+    F: for<'a, 'b> Fn(&'a QueryCtx<'b>) -> bool,
+{
+    fn summary(&self) -> String {
+        self.name.clone()
+    }
+
+    fn warning(&self) -> Option<String> {
+        self.name
+            .trim()
+            .is_empty()
+            .then(|| "No name set; this condition is anonymous in inspectors.".to_owned())
+    }
+
+    fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
+        (self.body)(query)
+    }
+}
+
 /// Inverts a condition. A missing condition evaluates to `false`.
 #[derive(Default)]
 pub struct Not {
@@ -228,6 +279,16 @@ mod tests {
         };
         assert!(any.evaluate(&bare_query(&caps)));
         assert_eq!(count.get(), 0, "second condition never evaluated");
+    }
+
+    #[test]
+    fn closure_condition_reports_and_evaluates() {
+        let caps = TypeMap::new();
+        let condition = check("Has a target", |query| query.target.is_some());
+        assert_eq!(condition.summary(), "Has a target");
+        assert!(!condition.evaluate(&bare_query(&caps)));
+        assert!(condition.warning().is_none());
+        assert!(check("", |_query| true).warning().is_some());
     }
 
     #[test]
