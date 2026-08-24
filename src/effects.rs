@@ -43,6 +43,60 @@ impl Effect for SetFlag {
     }
 }
 
+/// An effect created from a closure.
+pub struct Run<F> {
+    name: String,
+    body: F,
+}
+
+/// Wraps a closure as an effect.
+///
+/// ```
+/// use plotline::{Effect, EffectCtx, TypeMap, effects};
+/// use core::cell::Cell;
+/// use std::rc::Rc;
+///
+/// let applied = Rc::new(Cell::new(false));
+/// let seen = applied.clone();
+/// let effect = effects::run("Mark applied", move |_ctx| seen.set(true));
+/// let mut caps = TypeMap::new();
+/// effect.apply(&mut EffectCtx {
+///     target: None,
+///     chain: None,
+///     caps: &mut caps,
+/// });
+/// assert!(applied.get());
+/// ```
+pub fn run<F>(name: impl Into<String>, body: F) -> Run<F>
+where
+    F: for<'a, 'b> Fn(&'a mut EffectCtx<'b>),
+{
+    Run {
+        name: name.into(),
+        body,
+    }
+}
+
+impl<F> Effect for Run<F>
+where
+    F: for<'a, 'b> Fn(&'a mut EffectCtx<'b>),
+{
+    fn summary(&self) -> String {
+        self.name.clone()
+    }
+
+    fn warning(&self) -> Option<String> {
+        self.name
+            .trim()
+            .is_empty()
+            .then(|| "No name set; this effect is anonymous in inspectors.".to_owned())
+    }
+
+    fn apply(&self, effect_ctx: &mut EffectCtx<'_>) {
+        (self.body)(effect_ctx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -82,5 +136,23 @@ mod tests {
     #[test]
     fn empty_flag_name_warns() {
         assert!(SetFlag::default().warning().is_some());
+    }
+
+    #[test]
+    fn closure_effect_reports_and_applies() {
+        let applied = alloc::rc::Rc::new(core::cell::Cell::new(false));
+        let seen = applied.clone();
+        let effect = run("Mark applied", move |_ctx| seen.set(true));
+        assert_eq!(effect.summary(), "Mark applied");
+        assert!(effect.warning().is_none());
+
+        let mut caps = TypeMap::new();
+        effect.apply(&mut EffectCtx {
+            target: None,
+            chain: None,
+            caps: &mut caps,
+        });
+        assert!(applied.get());
+        assert!(run("", |_ctx| {}).warning().is_some());
     }
 }
