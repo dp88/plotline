@@ -1,11 +1,11 @@
-# plotline
+![plotline banner](art/banner.webp)
 
 [![CI](https://github.com/dp88/plotline/actions/workflows/ci.yml/badge.svg)](https://github.com/dp88/plotline/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
 Branching sequences of events as plain data. Use it for dialog, quests, and more.
 
-## What it does
+## What `plotline` does
 
 A sequence is an ordered list of steps:
 
@@ -20,7 +20,7 @@ ring_found:  remove item "gold ring"
              say "You have my thanks."
 ```
 
-plotline owns order, branches, calls, and waits. The host defines the steps.
+`plotline` handles order, branches, calls, and waits. The host defines the steps.
 
 ## What it does not do
 
@@ -78,9 +78,9 @@ $ cargo run --example dialog
 
 The public API has data types, execution traits, and built-in steps.
 
-### Data types
+### 📚 Data types
 
-#### Sequences
+#### 🧮 Sequences
 
 | Type | Description | Main API |
 | --- | --- | --- |
@@ -89,7 +89,7 @@ The public API has data types, execution traits, and built-in steps.
 | `Library` | Owns sequences and creates their handles. | `insert`, `get`, `get_mut`, `iter` |
 | `SequenceRef` | Opaque sequence handle. | `from_raw`, `to_raw` |
 
-#### Step execution
+#### 🐾 Step execution
 
 | Type | Description | Main API |
 | --- | --- | --- |
@@ -98,7 +98,7 @@ The public API has data types, execution traits, and built-in steps.
 | `Completion` | Thread-safe, one-shot wait handle. | `new`, `done`, `signal`, `is_complete` |
 | `StepFacts` | Snapshot used by analysis, editors, and tools. | `of` |
 
-#### Context & state
+#### 🧩 Context & state
 
 | Type | Description | Main API |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ The public API has data types, execution traits, and built-in steps.
 | `QueryCtx` | Read-only context for a condition. | `target`, `chain`, `caps` |
 | `EffectCtx` | Mutable context for an effect. | `target`, `chain`, `caps` |
 
-#### Runner
+#### 👟 Runner
 
 | Type | Description | Main API |
 | --- | --- | --- |
@@ -121,7 +121,7 @@ The public API has data types, execution traits, and built-in steps.
 | `SkipReason` | Reason a step was skipped. | `Disabled`, `Missing`, `Vanished` |
 | `StartError` | Reason `Runner::start` failed. | `AlreadyRunning` |
 
-#### Analysis
+#### 🔬 Analysis
 
 | Type | Description | Main API |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ The public API has data types, execution traits, and built-in steps.
 | `RailNode` | Display data for one analysed step. | `shape`, `solid`, `terminal`, `severed`, `soften_below` |
 | `RailShape` | Shape for a flow-analysis node. | `Circle`, `Diamond` |
 
-### Traits
+### 🧬 Traits
 
 | Trait | Purpose | Required operation |
 | --- | --- | --- |
