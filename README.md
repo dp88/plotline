@@ -20,7 +20,12 @@ ring_found:  remove item "gold ring"
              say "You have my thanks."
 ```
 
-`plotline` handles order, branches, calls, and waits. The host defines the steps.
+`plotline` handles order, branches, calls, returns, jumps, and waits. The host defines the
+steps.
+
+`Call` enters a subroutine and falling off its end returns to the caller. `Return` exits the
+current subroutine early. `Goto` clears the whole call chain before starting its target (or ends
+the chain when it has no target).
 
 ## What it does not do
 
@@ -84,9 +89,9 @@ The public API has data types, execution traits, and built-in steps.
 
 | Type | Description | Main API |
 | --- | --- | --- |
-| `Sequence` | Ordered list of steps. | `new`, `with_step`, `push`, `iter` |
+| `Sequence` | Ordered list of steps. | `new`, `with_step`, `push`, `insert`, `remove`, `get`, `iter` |
 | `Iter` | Iterator over sequence steps. | `Iterator`, `ExactSizeIterator` |
-| `Library` | Owns sequences and creates their handles. | `insert`, `get`, `get_mut`, `iter` |
+| `Library` | Owns sequences and creates their handles. | `insert`, `get`, `get_mut`, `find`, `ref_by_name`, `validate`, `iter` |
 | `SequenceRef` | Opaque sequence handle. | `from_raw`, `to_raw` |
 
 #### 🐾 Step execution
@@ -94,25 +99,25 @@ The public API has data types, execution traits, and built-in steps.
 | Type | Description | Main API |
 | --- | --- | --- |
 | `Flow` | Declared continuation after a step. | `Continue`, `End` |
-| `Progress` | Result of starting or resuming one step. | `Done`, `Wait`, `Call`, `Goto`, `Resume` |
+| `Progress` | Result of starting or resuming one step. | `Done`, `Wait`, `Call`, `Return`, `Goto`, `Resume` |
 | `Completion` | Thread-safe, one-shot wait handle. | `new`, `done`, `signal`, `is_complete` |
-| `StepFacts` | Snapshot used by analysis, editors, and tools. | `of` |
+| `StepFacts` | Snapshot used by analysis, editors, and tools. | `of`, `references` |
 
 #### 🧩 Context & state
 
 | Type | Description | Main API |
 | --- | --- | --- |
-| `Context` | Services, chain state, and location for one step. | `services`, `services_mut`, `flags`, `flags_mut`, `flag`, `set_flag`, `eval`, `enact`, `note`, `location`, `instigator`, `instigator_as` |
+| `Context` | Services, chain state, and location for one step. | `services`, `services_mut`, `service`, `service_mut`, `flags`, `flags_mut`, `flag`, `set_flag`, `eval`, `enact`, `note`, `location`, `instigator`, `instigator_as` |
 | `TypeMap` | One host value per concrete `'static` type. | `insert`, `get`, `get_mut`, `remove` |
 | `ChainFlags` | Boolean flags shared by one chain. | `flag`, `set_flag` |
-| `QueryCtx` | Read-only context for a condition. | `target`, `chain`, `caps` |
-| `EffectCtx` | Mutable context for an effect. | `target`, `chain`, `caps` |
+| `QueryCtx` | Read-only context for a condition. | `target`, `target_as`, `chain`, `caps`, `service` |
+| `EffectCtx` | Mutable context for an effect. | `target`, `target_as`, `chain`, `caps`, `service`, `service_mut` |
 
 #### 👟 Runner
 
 | Type | Description | Main API |
 | --- | --- | --- |
-| `Runner` | Executes one sequence chain at a time. | `start`, `advance`, `stop`, `current`, `drain_events` |
+| `Runner` | Executes one sequence chain at a time. | `start`, `advance`, `stop`, `is_running`, `current`, `drain_events` |
 | `RunnerConfig` | Limits for call depth, hops, resumes, and events. | Chainable limit setters |
 | `RunnerEvent` | Diagnostic event emitted by the runner. | `StepStarted`, `StepFailed`, `StepSkipped`, `SequenceMissing`, `Note` |
 | `ChainGuard` | Type alias for a host value held while a chain runs. | Dropped when the chain ends |
@@ -128,29 +133,40 @@ The public API has data types, execution traits, and built-in steps.
 | `FlowModel` | Reachability analysis for one sequence. | `analyse`, terminal and warning queries |
 | `RailNode` | Display data for one analysed step. | `shape`, `solid`, `terminal`, `severed`, `soften_below` |
 | `RailShape` | Shape for a flow-analysis node. | `Circle`, `Diamond` |
+| `ValidationWarning` | One warning from whole-library validation. | `sequence`, `index`, `message` |
 
 ### 🧬 Traits
 
-| Trait | Purpose | Required operation |
+| Trait | Purpose | Key API |
 | --- | --- | --- |
-| `Step` | Defines one host operation. | `summary`, `start` |
+| `Step` | Defines one host operation. | `summary`, `start`, `references` |
 | `StepRun` | Stores per-run state for a multi-phase step. | `resume` |
 | `IntoProgress` | Converts closure results to `Progress`. | `into_progress` |
 | `Condition` | Reads state and returns a Boolean answer. | `summary`, `evaluate` |
 | `Effect` | Applies one effect in one call. | `summary`, `apply` |
-| `SequenceFacts` | Supplies sequence facts to analysis, editors, and tools. | `step_count`, `step_facts`, `name` |
+| `SequenceFacts` | Supplies sequence facts to analysis, editors, and tools. | `step_count`, `step_facts`, `step_enabled`, `name` |
 | `SequenceSource` | Supplies sequence data and starts steps. | `start_step` |
 
 ### Built-ins
 
 Use the modules by name:
 
-- `conditions`: `Always`, `Not`, `All`, `Any`, and `Flag`.
-- `effects`: `SetFlag`.
-- `steps`: `Note`, `SetFlag`, `Branch`, `Call`, `Stop`, `ApplyEffects`, `Run`, and `run`.
+- `conditions`: `Always`, `Not`, `All`, `Any`, `Flag`, `Check`, `check`, `not`, `all`, `any`, `flag`, and `flag_clear`.
+- `effects`: `SetFlag`, `Run`, `run`, `set_flag`, and `clear_flag`.
+- `steps`: `Note`, `SetFlag`, `Branch`, `Goto`, `Call`, `Return`, `Stop`, `ApplyEffects`, `When`, `Run`, `run`, `branch`, `goto`, `call`, `stop`, and `when`.
 
 `steps::run` wraps a closure. Its body can return `()`, a `Completion`, or `Progress`; other
 return types are also supported when they implement [`IntoProgress`].
+
+`conditions::check` and `effects::run` provide the same closure-first style for conditions and
+effects. `steps::when` conditionally runs any step. Built-in constructors such as
+`conditions::flag`, `effects::set_flag`, `steps::call`, and `steps::goto` are shorthand over the
+public structs and do not remove the struct-literal API.
+
+`Library::validate()` reports empty or duplicate names, step and nested-object warnings, and
+references to missing sequences. It intentionally permits cycles, which are valid for authored
+graphs. `StepFacts::references` exposes every outgoing sequence reference, including both sides of
+a branch.
 
 ```rust
 # use plotline::{Sequence, steps};
