@@ -136,9 +136,18 @@ impl Step for Branch {
     }
 
     fn warning(&self) -> Option<String> {
-        (self.condition.is_some() && self.if_true == self.if_false).then(|| {
-            "Both outcomes lead to the same place; the condition decides nothing.".to_owned()
-        })
+        if let Some(condition) = &self.condition {
+            if let Some(warning) = condition.warning() {
+                return Some(format!("Condition: {warning}"));
+            }
+            if self.if_true == self.if_false {
+                return Some(
+                    "Both outcomes lead to the same place; the condition decides nothing."
+                        .to_owned(),
+                );
+            }
+        }
+        None
     }
 
     fn flow(&self) -> Flow {
@@ -365,9 +374,14 @@ impl Step for ApplyEffects {
     }
 
     fn warning(&self) -> Option<String> {
-        self.effects
-            .is_empty()
-            .then(|| "No effects to apply.".to_owned())
+        if self.effects.is_empty() {
+            return Some("No effects to apply.".to_owned());
+        }
+        self.effects.iter().enumerate().find_map(|(index, effect)| {
+            effect
+                .warning()
+                .map(|warning| format!("Effect {index}: {warning}"))
+        })
     }
 
     fn start(&self, ctx: &mut Context<'_>) -> Progress {
@@ -516,6 +530,16 @@ mod tests {
     }
 
     #[test]
+    fn branch_propagates_condition_warnings() {
+        let branch = Branch {
+            condition: Some(Box::new(conditions::Not::default())),
+            if_true: Some(SequenceRef::from_raw(1)),
+            if_false: None,
+        };
+        assert!(branch.warning().unwrap().contains("Condition:"));
+    }
+
+    #[test]
     fn constructors_build_common_steps() {
         let target = SequenceRef::from_raw(3);
         let branch = branch(conditions::Always::default(), Some(target), None);
@@ -613,6 +637,14 @@ mod tests {
             })],
         };
         assert_eq!(one.summary(), "Apply: Set flag 'x' to true");
+    }
+
+    #[test]
+    fn apply_effects_propagates_effect_warnings() {
+        let effects = ApplyEffects {
+            effects: vec![Box::new(crate::effects::SetFlag::default())],
+        };
+        assert!(effects.warning().unwrap().contains("Effect 0:"));
     }
 
     #[test]

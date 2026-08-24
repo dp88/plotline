@@ -98,9 +98,12 @@ impl Condition for Not {
     }
 
     fn warning(&self) -> Option<String> {
-        self.inner
-            .is_none()
-            .then(|| "No condition to invert; this evaluates false.".to_owned())
+        match &self.inner {
+            Some(inner) => inner
+                .warning()
+                .map(|warning| format!("Inner condition: {warning}")),
+            None => Some("No condition to invert; this evaluates false.".to_owned()),
+        }
     }
 
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
@@ -131,6 +134,17 @@ impl Condition for All {
         format!("All of {}", self.conditions.len())
     }
 
+    fn warning(&self) -> Option<String> {
+        self.conditions
+            .iter()
+            .enumerate()
+            .find_map(|(index, condition)| {
+                condition
+                    .warning()
+                    .map(|warning| format!("Condition {index}: {warning}"))
+            })
+    }
+
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
         self.conditions.iter().all(|c| c.evaluate(query))
     }
@@ -154,6 +168,17 @@ pub struct Any {
 impl Condition for Any {
     fn summary(&self) -> String {
         format!("Any of {}", self.conditions.len())
+    }
+
+    fn warning(&self) -> Option<String> {
+        self.conditions
+            .iter()
+            .enumerate()
+            .find_map(|(index, condition)| {
+                condition
+                    .warning()
+                    .map(|warning| format!("Condition {index}: {warning}"))
+            })
     }
 
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
@@ -302,6 +327,14 @@ mod tests {
             inner: Some(Box::new(Always { value: true })),
         };
         assert!(!not.evaluate(&bare_query(&caps)));
+    }
+
+    #[test]
+    fn composed_conditions_propagate_nested_warnings() {
+        let nested = not(check("", |_query| true));
+        assert!(nested.warning().unwrap().contains("Inner condition"));
+        let all_conditions = all([Box::new(nested) as Box<dyn Condition>]);
+        assert!(all_conditions.warning().unwrap().contains("Condition 0"));
     }
 
     #[test]
