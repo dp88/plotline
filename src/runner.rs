@@ -178,6 +178,9 @@ pub(crate) struct Events {
 impl Events {
     /// Records an event.
     pub(crate) fn record(&mut self, event: RunnerEvent) {
+        if self.cap == 0 {
+            return;
+        }
         if self.queue.len() >= self.cap {
             self.queue.pop_front();
         }
@@ -1472,6 +1475,22 @@ mod tests {
                 index: 99
             })
         );
+    }
+
+    #[test]
+    fn zero_event_capacity_disables_buffering() {
+        let mut library = Library::new();
+        let sequence = library.insert(Sequence::new("one").with_step(steps::Note {
+            message: "hello".into(),
+        }));
+        let mut runner = Runner::new(RunnerConfig::default().max_buffered_events(0));
+        let mut services = TypeMap::new();
+        runner.start(sequence, None).unwrap();
+        assert_eq!(
+            runner.advance(&mut library, &mut services),
+            Poll::Ready(Outcome::Finished)
+        );
+        assert!(runner.drain_events().next().is_none());
     }
 
     /// Calls a subroutine and counts later resumes.
