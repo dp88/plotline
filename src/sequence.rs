@@ -162,6 +162,17 @@ impl<'a> Iterator for Iter<'a> {
 
 impl ExactSizeIterator for Iter<'_> {}
 
+/// One warning produced by [`Library::validate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidationWarning {
+    /// Sequence containing the problem.
+    pub sequence: SequenceRef,
+    /// Step containing the problem, or `None` for a sequence-level problem.
+    pub index: Option<usize>,
+    /// Human-readable warning message.
+    pub message: String,
+}
+
 /// Owns sequences and creates their [`SequenceRef`] handles.
 ///
 /// ```
@@ -217,6 +228,59 @@ impl Library {
     #[must_use]
     pub fn ref_by_name(&self, name: &str) -> Option<SequenceRef> {
         self.find(name).map(|(sequence, _)| sequence)
+    }
+
+    /// Validates names, steps, and sequence references across the library.
+    ///
+    /// Cycles are valid and are intentionally not reported.
+    #[must_use]
+    pub fn validate(&self) -> Vec<ValidationWarning> {
+        let mut warnings = Vec::new();
+        for (index, sequence) in self.sequences.iter().enumerate() {
+            let sequence_ref = SequenceRef::from_raw(index as u64);
+            if sequence.name().trim().is_empty() {
+                warnings.push(ValidationWarning {
+                    sequence: sequence_ref,
+                    index: None,
+                    message: "Sequence has no name.".to_owned(),
+                });
+            } else if self
+                .sequences
+                .iter()
+                .take(index)
+                .any(|previous| previous.name() == sequence.name())
+            {
+                warnings.push(ValidationWarning {
+                    sequence: sequence_ref,
+                    index: None,
+                    message: format!("Duplicate sequence name '{}'.", sequence.name()),
+                });
+            }
+
+            for (step_index, step) in sequence.iter().enumerate() {
+                let facts = StepFacts::of(step);
+                if let Some(message) = facts.warning {
+                    warnings.push(ValidationWarning {
+                        sequence: sequence_ref,
+                        index: Some(step_index),
+                        message,
+                    });
+                }
+                for target in facts.references {
+                    if self.get(target).is_none() {
+                        warnings.push(ValidationWarning {
+                            sequence: sequence_ref,
+                            index: Some(step_index),
+                            message: format!(
+                                "References missing sequence seq#{:x}.",
+                                target.to_raw()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        warnings
     }
 
     /// Returns the number of sequences.
@@ -359,5 +423,37 @@ mod tests {
         assert_eq!(library.step_facts(a, 0).unwrap().summary, "Note \"1\"");
         assert!(library.step_facts(a, 9).is_none());
         assert_eq!(library.name(a), "a");
+    }
+
+    #[test]
+    fn library_validation_reports_authoring_problems() {
+        let mut library = Library::new();
+        let broken = library.insert(
+            Sequence::new("")
+                .with_step(steps::Call::to(SequenceRef::from_raw(99)))
+                .with_step(steps::SetFlag::default()),
+        );
+        let duplicate = library.insert(Sequence::new("duplicate"));
+        library.insert(Sequence::new("duplicate"));
+
+        let warnings = library.validate();
+        assert!(warnings.iter().any(|warning| {
+            warning.sequence == broken
+                && warning.index.is_none()
+                && warning.message == "Sequence has no name."
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.sequence == broken
+                && warning.index == Some(0)
+                && warning.message.contains("missing sequence")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.sequence == broken
+                && warning.index == Some(1)
+                && warning.message == "No flag name set."
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.sequence != duplicate && warning.message.contains("Duplicate sequence name")
+        }));
     }
 }

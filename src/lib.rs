@@ -38,7 +38,7 @@ pub use flow_model::{FlowModel, RailNode, RailShape};
 pub use runner::{
     AbortReason, ChainGuard, Outcome, Runner, RunnerConfig, RunnerEvent, SkipReason, StartError,
 };
-pub use sequence::{Iter, Library, Sequence};
+pub use sequence::{Iter, Library, Sequence, ValidationWarning};
 pub use source::{SequenceFacts, SequenceRef, SequenceSource};
 pub use step::{Flow, IntoProgress, Progress, Step, StepFacts, StepRun};
 pub use vocab::{Condition, Effect, EffectCtx, QueryCtx};
