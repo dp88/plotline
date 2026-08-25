@@ -193,6 +193,10 @@ for event in runner.drain_events() {
 
 `ctx.note(..)` adds location-tagged notes.
 
+## Artwork Credit
+
+The banner artwork is [*Subway* (1934) by Lily Furedi](https://commons.wikimedia.org/wiki/File%3ASubway%2C_Furedi%2C_1934.jpg), sourced from [Wikimedia Commons](https://commons.wikimedia.org/). The digital image is credited to the Smithsonian American Art Museum, and the Commons file is marked public domain.
+
 ## Requirements
 
 - Rust 1.85 or later (edition 2024).
