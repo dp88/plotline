@@ -569,8 +569,8 @@ mod tests {
         assert_eq!(branch.if_true, Some(target));
         assert_eq!(Call::to(target).sequence, Some(target));
         assert_eq!(goto(target).sequence, Some(target));
-        assert_eq!(SetFlag::set("accepted").value, true);
-        assert_eq!(SetFlag::clear("accepted").value, false);
+        assert!(SetFlag::set("accepted").value);
+        assert!(!SetFlag::clear("accepted").value);
         assert_eq!(stop().summary(), "Stop");
     }
 
