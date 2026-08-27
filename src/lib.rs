@@ -1,18 +1,76 @@
 //! Branching sequences with subroutines and external waits.
 //!
-//! [`Sequence`] stores shared steps. [`Runner`] stores run state. [`Library`] stores
-//! sequences and creates their [`SequenceRef`] handles. Steps use [`Condition`] to read
-//! state and [`Effect`] to change it.
+//! A sequence is an ordered list of steps:
 //!
-//! The crate does not own a clock or an engine. A waiting step returns [`Completion`].
-//! The host signals it and calls [`Runner::advance`]. The runner reports diagnostics as
-//! [`RunnerEvent`] values.
+//! ```text
+//! say "Hello, traveler."
+//! say "Have you seen my ring?"
+//! [choice] "Yes"  ──▶ ring_found
+//!          "No"   ──▶ ring_lost
 //!
-//! The default `std` feature catches panics in steps. Without it, the crate uses `alloc`
-//! and does not catch panics.
+//! ring_found:  remove item "gold ring"
+//!              advance quest "The Lost Ring" to stage 2
+//!              say "You have my thanks."
+//! ```
+//!
+//! `plotline` runs order, branches, calls, returns, jumps, and waits. The
+//! host defines the steps. Use it for dialog, quests, cutscenes, tutorials —
+//! any authored flow that must not depend on an engine.
+//!
+//! # The pieces
+//!
+//! [`Sequence`] stores shared steps. [`Runner`] stores run state. [`Library`]
+//! stores sequences and creates their [`SequenceRef`] handles. Steps use
+//! [`Condition`] to read state and [`Effect`] to change it; both connect the
+//! host systems and also work outside the runner.
+//!
+//! # Control flow
+//!
+//! [`Progress::Call`] enters a subroutine, and falling off its end returns to
+//! the caller. [`Progress::Return`] exits the current subroutine early.
+//! [`Progress::Goto`] clears the whole call chain before starting its target,
+//! or ends the chain when it has no target.
+//!
+//! # No clock
+//!
+//! A step that needs to wait returns [`Progress::Wait`] with a [`Completion`]
+//! handle. The host signals the handle and calls [`Runner::advance`]. A
+//! multi-phase step can instead return [`Progress::Resume`] and manage its
+//! own per-run state through [`StepRun`]. The crate does not define timed
+//! waits.
+//!
+//! # Built-ins
+//!
+//! The [`steps`], [`conditions`], and [`effects`] modules cover the common
+//! cases. [`steps::run`] wraps a closure; its body can return `()`, a
+//! [`Completion`], a [`Progress`], or any other type that implements
+//! [`IntoProgress`]. [`conditions::check`] and [`effects::run`] give the
+//! same closure-first style for conditions and effects, and [`steps::when`]
+//! conditionally runs any step. Constructors such as [`conditions::flag`],
+//! [`effects::set_flag`], [`steps::goto`], and [`steps::stop`] are shorthand
+//! over the public structs and do not remove the struct-literal API.
+//!
+//! # Validation and analysis
+//!
+//! [`Library::validate`] reports empty or duplicate names, step and
+//! nested-object warnings, and references to missing sequences. It permits
+//! cycles, which are valid in authored graphs. [`StepFacts::references`]
+//! exposes every outgoing sequence reference, including both sides of a
+//! branch. [`FlowModel`] computes reachability for one sequence — the basis
+//! for an editor's rail display.
+//!
+//! # Diagnostics
+//!
+//! The runner reports [`RunnerEvent`] values; the host drains them with
+//! [`Runner::drain_events`] and decides how to log them. [`Context::note`]
+//! adds location-tagged notes from inside a step.
+//!
+//! # Feature flags
+//!
+//! The default `std` feature catches panics in steps, which requires
+//! `panic = "unwind"`. Without it, the crate uses `alloc` only and does not
+//! catch panics.
 
-#![warn(missing_docs)]
-#![allow(clippy::single_match_else)]
 #![no_std]
 
 extern crate alloc;
@@ -43,7 +101,7 @@ pub use source::{SequenceFacts, SequenceRef, SequenceSource};
 pub use step::{Flow, IntoProgress, Progress, Step, StepFacts, StepRun};
 pub use vocab::{Condition, Effect, EffectCtx, QueryCtx};
 
-/// Compiles the README code blocks as doctests.
+/// The README is compiled as part of the test suite, so its examples cannot rot.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
-struct Readme;
+struct ReadmeDoctests;
