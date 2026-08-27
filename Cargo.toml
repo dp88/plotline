@@ -10,7 +10,10 @@ license = "MIT OR Apache-2.0"
 keywords = ["sequence", "dialogue", "quest", "scripting", "gamedev"]
 categories = ["game-development", "data-structures"]
 readme = "README.md"
-exclude = [".github/", "art/banner.af"]
+exclude = [".github/", "art/", "RELEASING.md", "deny.toml"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["std"]
@@ -22,3 +25,4 @@ missing_docs = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+single_match_else = "allow"
