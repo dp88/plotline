@@ -1,13 +1,13 @@
 [package]
 name = "plotline"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["David Palmer"]
-description = "Engine-independent sequences with branching, subroutines, and external waits"
+description = "Engine-independent sequences and capability requirements for authored game logic"
 repository = "https://github.com/dp88/plotline"
 license = "MIT OR Apache-2.0"
-keywords = ["sequence", "dialogue", "quest", "scripting", "gamedev"]
+keywords = ["sequence", "dialogue", "quest", "prerequisites", "gamedev"]
 categories = ["game-development", "data-structures"]
 readme = "README.md"
 exclude = [".github/", "art/", "RELEASING.md", "deny.toml"]

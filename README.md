@@ -12,11 +12,14 @@ Branching sequences of events as plain data — dialog, quests, cutscenes,
 tutorials — for any engine. The host defines the steps; `plotline` runs
 order, branches, subroutines, jumps, and waits.
 
+It also answers what gates those flows: does an entity hold what a thing
+demands, and if not, what is it short of?
+
 ## Quick start
 
 ```toml
 [dependencies]
-plotline = "0.2"
+plotline = "0.3"
 ```
 
 ```rust
@@ -55,10 +58,52 @@ assert_eq!(
 );
 ```
 
+## Requirements
+
+A requirement is a rule held as data, over capability keys you define. The
+crate never interprets a key. It answers whether a set holds one, and
+explains what failed.
+
+```rust
+use plotline::{CapabilitySet, Requirement};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Cap {
+    FrozenHabitation,
+    HighGravityHabitation,
+    Shipyard,
+}
+
+let humans = CapabilitySet::from([Cap::FrozenHabitation, Cap::Shipyard]);
+
+let deneb_iv = Requirement::all([
+    Requirement::has(Cap::FrozenHabitation),
+    Requirement::has(Cap::HighGravityHabitation),
+    Requirement::any([
+        Requirement::has(Cap::Shipyard),
+        Requirement::named("borrowed-fleet"),
+    ]),
+]);
+
+assert!(!deneb_iv.satisfies(&humans));
+
+let result = deneb_iv.evaluate(&humans);
+assert_eq!(result.missing(), vec![Cap::HighGravityHabitation]);
+```
+
+The same value is a `Condition`, so a `Branch` or `when` step can hold one.
+That path also reads chain flags and a `Checks` registry, which is how a
+rule loaded from a file calls a host closure by name.
+
+Use it for technology prerequisites, equipment requirements, habitability,
+crafting recipes, policies, dialogue choices, and skill unlocks.
+
 ## Why
 
 - **Plain data.** A sequence is an ordered list of steps the host defines —
   closures for the simple cases, structs where a step carries state.
+- **Rules you can read.** A `Requirement` clones, compares, prints, and
+  serializes. Tools can walk it without running it.
 - **Subroutines and jumps.** `Call` enters a subroutine and falling off its
   end returns to the caller; `Return` exits early; `Goto` clears the whole
   call chain before starting its target.
@@ -74,14 +119,18 @@ assert_eq!(
 - Rust 1.85 or later, edition 2024.
 - `no_std` with `alloc`; no required dependencies.
 - `std` (default): catches panics in steps. It requires `panic = "unwind"`.
+- `serde` (off): derives `Serialize` and `Deserialize` for `Requirement`,
+  `CapabilitySet`, and `Evaluation`. It works without `std`.
 - `--no-default-features` builds without `std` and does not catch panics.
 
 ## More examples and documentation
 
 - [API documentation](https://docs.rs/plotline) — rustdoc is the manual:
   steps, built-ins, validation, analysis, and diagnostics.
-- [`examples/dialog.rs`](examples/dialog.rs) — run it with
-  `cargo run --example dialog`.
+- [`examples/dialog.rs`](examples/dialog.rs) — a branching conversation.
+  Run it with `cargo run --example dialog`.
+- [`examples/unlocks.rs`](examples/unlocks.rs) — requirements gating what an
+  empire can do. Run it with `cargo run --example unlocks`.
 - [CHANGELOG](CHANGELOG.md)
 - [Issue tracker](https://github.com/dp88/plotline/issues)
 

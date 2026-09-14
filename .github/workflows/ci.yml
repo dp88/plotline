@@ -35,6 +35,7 @@ jobs:
       - run: cargo test --release --all-features --all-targets
       - run: cargo test --release --all-features --doc
       - run: cargo run --example dialog
+      - run: cargo run --example unlocks
 
   # The `std` feature is a real boundary: without it the runner does not
   # catch panics. Test both sides of it, and keep the bare-metal build that
@@ -53,6 +54,8 @@ jobs:
       - run: cargo clippy --no-default-features --all-targets
       - name: Cross-compile to bare metal
         run: cargo build --no-default-features --target thumbv7em-none-eabihf
+      - name: Cross-compile to bare metal with serde
+        run: cargo build --no-default-features --features serde --target thumbv7em-none-eabihf
 
   lint:
     name: Format and lint

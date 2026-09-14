@@ -17,12 +17,25 @@
 //! host defines the steps. Use it for dialog, quests, cutscenes, tutorials —
 //! any authored flow that must not depend on an engine.
 //!
+//! It also answers the question that sits between such flows: does an entity
+//! hold what a thing demands, and if not, what is it short of?
+//!
+//! ```text
+//! Deneb IV requires
+//!     ✓ FrozenHabitation
+//!     ✗ HighGravityHabitation
+//! ```
+//!
 //! # The pieces
 //!
 //! [`Sequence`] stores shared steps. [`Runner`] stores run state. [`Library`]
 //! stores sequences and creates their [`SequenceRef`] handles. Steps use
 //! [`Condition`] to read state and [`Effect`] to change it; both connect the
 //! host systems and also work outside the runner.
+//!
+//! [`Requirement`] holds a boolean rule as data. [`CapabilitySet`] holds what
+//! an entity has. Together they cover prerequisites, unlocks, permissions,
+//! and habitability without the runner.
 //!
 //! # Control flow
 //!
@@ -39,6 +52,34 @@
 //! own per-run state through [`StepRun`]. The crate does not define timed
 //! waits.
 //!
+//! # Requirements
+//!
+//! A [`Requirement`] is a tree over capability keys the host chooses. The
+//! crate never interprets a key. [`Requirement::satisfies`] answers with a
+//! bool and allocates nothing; [`Requirement::evaluate`] returns an
+//! [`Evaluation`] tree that explains the answer, including the conservative
+//! [`Evaluation::missing`] list. Both are pure functions of the requirement
+//! and the [`CapabilitySet`], so they suit a user interface, a planner, or a
+//! test.
+//!
+//! `Requirement` also implements [`Condition`], so a [`steps::Branch`] or
+//! [`steps::when`] step can hold one. That path reads chain flags and the
+//! [`conditions::Checks`] registry, so [`Requirement::Flag`] and
+//! [`Requirement::Named`] work there. Call [`Requirement::satisfies_in`] or
+//! [`Requirement::evaluate_in`] for the context answer, because the inherent
+//! [`Requirement::evaluate`] shadows [`Condition::evaluate`].
+//!
+//! [`effects::grant`] and [`effects::revoke`] move a capability in or out of
+//! the set. The evaluator does not care which source granted what.
+//!
+//! # Closures and data
+//!
+//! A [`conditions::check`] closure reads any host state, but it cannot be
+//! stored in a file or read by a tool. A `Requirement` can be both, but it
+//! only asks about capabilities and flags. [`conditions::Checks`] joins them:
+//! it gives a closure a name, and [`Requirement::Named`] calls that name.
+//! [`Requirement::unknown_checks`] reports names no closure answers.
+//!
 //! # Built-ins
 //!
 //! The [`steps`], [`conditions`], and [`effects`] modules cover the common
@@ -46,9 +87,9 @@
 //! [`Completion`], a [`Progress`], or any other type that implements
 //! [`IntoProgress`]. [`conditions::check`] and [`effects::run`] give the
 //! same closure-first style for conditions and effects, and [`steps::when`]
-//! conditionally runs any step. Constructors such as [`conditions::flag`],
-//! [`effects::set_flag`], [`steps::goto`], and [`steps::stop`] are shorthand
-//! over the public structs and do not remove the struct-literal API.
+//! conditionally runs any step. Constructors such as [`effects::set_flag`],
+//! [`steps::goto`], and [`steps::stop`] are shorthand over the public
+//! structs and do not remove the struct-literal API.
 //!
 //! # Validation and analysis
 //!
@@ -63,13 +104,19 @@
 //!
 //! The runner reports [`RunnerEvent`] values; the host drains them with
 //! [`Runner::drain_events`] and decides how to log them. [`Context::note`]
-//! adds location-tagged notes from inside a step.
+//! adds location-tagged notes from inside a step. [`Condition::explain`]
+//! returns an [`Explanation`] tree for any condition, including one whose
+//! capability key type the caller does not know.
 //!
 //! # Feature flags
 //!
 //! The default `std` feature catches panics in steps, which requires
 //! `panic = "unwind"`. Without it, the crate uses `alloc` only and does not
 //! catch panics.
+//!
+//! The `serde` feature derives `Serialize` and `Deserialize` for
+//! [`Requirement`], [`CapabilitySet`], and [`Evaluation`], so rules are
+//! authorable in JSON, RON, or YAML. It works without `std`.
 
 #![no_std]
 
