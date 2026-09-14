@@ -482,7 +482,6 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use crate::conditions;
     use crate::context::{ChainState, TypeMap};
     use crate::runner::Events;
     use crate::sequence::Sequence;
@@ -516,7 +515,7 @@ mod tests {
     #[test]
     fn branch_picks_the_false_side() {
         let branch = Branch {
-            condition: Some(Box::new(conditions::Always { value: false })),
+            condition: Some(Box::new(crate::Rule::any([]))),
             if_true: Some(SequenceRef::from_raw(1)),
             if_false: Some(SequenceRef::from_raw(2)),
         };
@@ -527,7 +526,7 @@ mod tests {
     #[test]
     fn branch_with_equal_targets_and_a_condition_warns() {
         let pointless = Branch {
-            condition: Some(Box::new(conditions::Always::default())),
+            condition: Some(Box::new(crate::Rule::all([]))),
             if_true: Some(SequenceRef::from_raw(1)),
             if_false: Some(SequenceRef::from_raw(1)),
         };
@@ -565,7 +564,7 @@ mod tests {
     #[test]
     fn constructors_build_common_steps() {
         let target = SequenceRef::from_raw(3);
-        let branch = branch(conditions::Always::default(), Some(target), None);
+        let branch = branch(crate::Rule::all([]), Some(target), None);
         assert_eq!(branch.if_true, Some(target));
         assert_eq!(Call::to(target).sequence, Some(target));
         assert_eq!(goto(target).sequence, Some(target));
@@ -576,14 +575,14 @@ mod tests {
 
     #[test]
     fn when_skips_the_inner_step_when_false() {
-        let step = when(conditions::Always { value: false }, Stop);
+        let step = when(crate::Rule::any([]), Stop);
         let (progress, _) = with_ctx(|ctx| step.start(ctx));
         assert!(matches!(progress, Progress::Done));
     }
 
     #[test]
     fn when_runs_the_inner_step_when_true() {
-        let step = when(conditions::Always::default(), Stop);
+        let step = when(crate::Rule::all([]), Stop);
         assert_eq!(step.flow(), Flow::End);
         let (progress, _) = with_ctx(|ctx| step.start(ctx));
         assert!(matches!(progress, Progress::Goto(None)));

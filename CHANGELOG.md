@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 0.3.0 — 2026-09-13
+## 0.3.0 — 2026-09-14
 
 ### Added
 
@@ -14,18 +14,17 @@ All notable changes to this project are documented in this file.
 - `CapabilitySet<K>`: the capabilities one entity holds.
 - `Evaluation<K>`: the result tree. It keeps the keys, reports
   `satisfied()`, and lists a conservative `missing()`.
-- `Condition::explain` returns an `Explanation`, the display tree for a
-  boxed condition whose key type the caller does not know. The default
-  reports one leaf, so existing conditions need no change.
+- `Evaluation` implements `Display`, which draws the result as a ✓/✗
+  tree.
 - `conditions::Checks`: a registry that gives a host closure a name, so a
   stored requirement can call it through `Requirement::Named`.
 - `effects::grant` and `effects::revoke` move one capability in or out of
   a `CapabilitySet`.
 - `Unlocks<I, K>` and `Unlock<K>`: a graph of nodes that require
   capabilities and grant them. The edges are derived, never authored.
-  It reports `status`, `available`, `locked`, `providers`,
-  `dependencies`, `optional_dependencies`, `dependents`, `rank`, and
-  `ranks`, and `validate` finds cycles and unreachable content.
+  It reports `is_available`, `available`, `providers`, `dependencies`,
+  `optional_dependencies`, `rank`, and `ranks`, and `validate` finds
+  cycles and unreachable content.
 - `Requirement::required` and `Requirement::optional`: the hard and soft
   edge sets of a dependency graph.
 - Optional `serde` feature for `Requirement`, `CapabilitySet`,
@@ -35,21 +34,17 @@ All notable changes to this project are documented in this file.
 
 ### Removed
 
-- `conditions::All`, `Any`, `Not`, and `Flag`, with the `all`, `any`,
-  `not`, `flag`, and `flag_clear` shorthands. `Requirement` replaces them
-  with one vocabulary that serializes and inspects. Replace
-  `conditions::Flag::is_set("x")` with `Rule::flag("x")`.
-
-### Fixed
-
-- `CapabilitySet::default` no longer demands `K: Default`. The derived
-  implementation added a bound that `BTreeSet` never needed.
+- `conditions::All`, `Any`, `Not`, `Flag`, and `Always`, with the `all`,
+  `any`, `not`, `flag`, and `flag_clear` shorthands. `Requirement`
+  replaces them with one vocabulary that serializes and inspects.
+  Replace `conditions::Flag::is_set("x")` with `Rule::flag("x")`, and
+  `conditions::Always::default()` with `Rule::all([])`.
 
 ### Note
 
-`Requirement::evaluate` takes a capability set. Use `satisfies_in` and
-`evaluate_in` for the step-context answer, because the inherent method
-shadows `Condition::evaluate`.
+`Requirement::evaluate` takes a capability set. Use `satisfies_in` for
+the step-context answer, because the inherent method shadows
+`Condition::evaluate`.
 
 ## 0.2.0 — 2026-08-24
 

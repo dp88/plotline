@@ -7,7 +7,7 @@ use alloc::string::String;
 use core::any::Any;
 use core::fmt::Debug;
 
-use crate::capability::CapabilitySet;
+use crate::rules::CapabilitySet;
 use crate::vocab::{Effect, EffectCtx};
 
 /// Sets a chain flag. Outside a chain, it does nothing.
@@ -82,11 +82,11 @@ impl Effect for SetFlag {
     }
 }
 
-/// Adds a capability to the entity's [`CapabilitySet`].
+/// Adds or removes one capability in the entity's [`CapabilitySet`].
 ///
-/// The set lives in the service registry, one per key type. The effect
-/// creates the set when the host has not registered one, so a grant is never
-/// a silent no-op.
+/// The set lives in the service registry, one per key type. A grant creates
+/// the set when the host has not registered one, so it is never a silent
+/// no-op. Revoking a capability the entity never held changes nothing.
 ///
 /// ```
 /// use plotline::{CapabilitySet, Effect, EffectCtx, TypeMap, effects};
@@ -106,59 +106,52 @@ impl Effect for SetFlag {
 /// assert!(caps.get::<CapabilitySet<Seen>>().unwrap().contains(&Seen::Intro));
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub struct Grant<K> {
-    /// The capability to add.
+pub struct SetCapability<K> {
+    /// The capability to add or remove.
     pub capability: K,
+    /// Whether the entity should hold it afterwards.
+    pub held: bool,
 }
 
 /// Creates an effect that adds a capability.
 #[must_use]
-pub fn grant<K>(capability: K) -> Grant<K> {
-    Grant { capability }
+pub fn grant<K>(capability: K) -> SetCapability<K> {
+    SetCapability {
+        capability,
+        held: true,
+    }
 }
 
-impl<K: Ord + Any + Clone + Debug> Effect for Grant<K> {
+/// Creates an effect that removes a capability.
+#[must_use]
+pub fn revoke<K>(capability: K) -> SetCapability<K> {
+    SetCapability {
+        capability,
+        held: false,
+    }
+}
+
+impl<K: Ord + Any + Clone + Debug> Effect for SetCapability<K> {
     fn summary(&self) -> String {
-        format!("Grant {:?}", self.capability)
+        let verb = if self.held { "Grant" } else { "Revoke" };
+        format!("{verb} {:?}", self.capability)
     }
 
     fn apply(&self, effect_ctx: &mut EffectCtx<'_>) {
         match effect_ctx.caps.get_mut::<CapabilitySet<K>>() {
             Some(held) => {
-                held.insert(self.capability.clone());
+                if self.held {
+                    held.insert(self.capability.clone());
+                } else {
+                    held.remove(&self.capability);
+                }
             }
-            None => {
+            None if self.held => {
                 effect_ctx
                     .caps
                     .insert(CapabilitySet::from([self.capability.clone()]));
             }
-        }
-    }
-}
-
-/// Removes a capability from the entity's [`CapabilitySet`].
-///
-/// Removing a capability the entity never held changes nothing.
-#[derive(Clone, Copy, Debug)]
-pub struct Revoke<K> {
-    /// The capability to remove.
-    pub capability: K,
-}
-
-/// Creates an effect that removes a capability.
-#[must_use]
-pub fn revoke<K>(capability: K) -> Revoke<K> {
-    Revoke { capability }
-}
-
-impl<K: Ord + Any + Debug> Effect for Revoke<K> {
-    fn summary(&self) -> String {
-        format!("Revoke {:?}", self.capability)
-    }
-
-    fn apply(&self, effect_ctx: &mut EffectCtx<'_>) {
-        if let Some(held) = effect_ctx.caps.get_mut::<CapabilitySet<K>>() {
-            held.remove(&self.capability);
+            None => {}
         }
     }
 }

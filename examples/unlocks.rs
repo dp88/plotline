@@ -3,8 +3,8 @@
 //! Run it with `cargo run --example unlocks`.
 
 use plotline::{
-    CapabilitySet, Explanation, Library, QueryCtx, Requirement, Runner, Sequence, TypeMap,
-    conditions, effects, steps,
+    CapabilitySet, Library, QueryCtx, Requirement, Runner, Sequence, TypeMap, conditions, effects,
+    steps,
 };
 
 /// The host owns this vocabulary. The crate never interprets it.
@@ -70,15 +70,7 @@ fn report(requirement: &Requirement<Cap>, held: &CapabilitySet<Cap>) {
     let result = requirement.evaluate(held);
     println!("satisfied: {}", result.satisfied());
     println!("missing:   {:?}", result.missing());
-    print_tree(&Explanation::from(&result), 0);
-}
-
-fn print_tree(node: &Explanation, depth: usize) {
-    let mark = if node.satisfied { '✓' } else { '✗' };
-    println!("{:indent$}{mark} {}", "", node.summary, indent = depth * 2);
-    for child in &node.children {
-        print_tree(child, depth + 1);
-    }
+    println!("{result}");
 }
 
 /// Runs a sequence whose first step refuses to continue without the capabilities.

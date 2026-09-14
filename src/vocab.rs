@@ -1,7 +1,6 @@
 //! Conditions query state. Effects change state.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use core::any::Any;
 
@@ -60,37 +59,6 @@ impl EffectCtx<'_> {
     }
 }
 
-/// A display tree that explains one condition result.
-///
-/// Every condition can produce one, so a host that holds a
-/// `Box<dyn Condition>` can show why it held without knowing the concrete
-/// type. A leaf condition reports itself and no children.
-///
-/// [`Requirement`](crate::Requirement) also offers
-/// [`Requirement::evaluate`](crate::Requirement::evaluate), which keeps the
-/// capability keys instead of formatting them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Explanation {
-    /// The condition summary.
-    pub summary: String,
-    /// Whether the condition held.
-    pub satisfied: bool,
-    /// One entry per inner condition.
-    pub children: Vec<Explanation>,
-}
-
-impl Explanation {
-    /// Creates a childless explanation.
-    #[must_use]
-    pub fn leaf(summary: impl Into<String>, satisfied: bool) -> Self {
-        Self {
-            summary: summary.into(),
-            satisfied,
-            children: Vec::new(),
-        }
-    }
-}
-
 /// A yes/no query.
 pub trait Condition {
     /// Returns a display summary.
@@ -103,15 +71,6 @@ pub trait Condition {
 
     /// Evaluates the query.
     fn evaluate(&self, query: &QueryCtx<'_>) -> bool;
-
-    /// Evaluates the query and explains the answer.
-    ///
-    /// The default reports this condition as one leaf. A condition built from
-    /// inner conditions should override it and return their results as
-    /// children.
-    fn explain(&self, query: &QueryCtx<'_>) -> Explanation {
-        Explanation::leaf(self.summary(), self.evaluate(query))
-    }
 }
 
 /// An action that completes in one call.

@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use plotline::{CapabilitySet, Explanation, Requirement, Status, Unlock, Unlocks};
+use plotline::{CapabilitySet, Requirement, Unlock, Unlocks};
 
 /// The host owns this vocabulary. The crate never interprets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,7 +77,7 @@ fn main() {
 
     println!("\n== Why deep-space-colonies is locked ==");
     let result = tree.evaluate(&"deep-space-colonies", &held).unwrap();
-    print_tree(&Explanation::from(&result), 0);
+    println!("{result}");
     println!("hard shortfall: {:?}", result.missing());
 
     println!("\n== Researching everything reachable ==");
@@ -116,10 +116,10 @@ fn draw(tree: &Tree, held: &CapabilitySet<Cap>, taken: &BTreeSet<&str>) {
     rows.sort_by_key(|(rank, id)| (rank.copied().unwrap_or(usize::MAX), *id));
 
     for (rank, id) in rows {
-        let mark = match (taken.contains(id), tree.status(id, held)) {
+        let mark = match (taken.contains(id), tree.is_available(id, held)) {
             (true, _) => '●',
-            (false, Some(Status::Available)) => '○',
-            _ => '·',
+            (false, true) => '○',
+            (false, false) => '·',
         };
         let rank = rank.map_or_else(|| "  ?".into(), |rank| format!("{rank:>3}"));
 
@@ -139,14 +139,6 @@ fn draw(tree: &Tree, held: &CapabilitySet<Cap>, taken: &BTreeSet<&str>) {
         );
     }
     println!("      ● taken   ○ available   · locked");
-}
-
-fn print_tree(node: &Explanation, depth: usize) {
-    let mark = if node.satisfied { '✓' } else { '✗' };
-    println!("{:indent$}{mark} {}", "", node.summary, indent = depth * 2);
-    for child in &node.children {
-        print_tree(child, depth + 1);
-    }
 }
 
 fn report_warnings(tree: &Tree) {

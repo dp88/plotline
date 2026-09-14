@@ -66,9 +66,9 @@
 //! `Requirement` also implements [`Condition`], so a [`steps::Branch`] or
 //! [`steps::when`] step can hold one. That path reads chain flags and the
 //! [`conditions::Checks`] registry, so [`Requirement::Flag`] and
-//! [`Requirement::Named`] work there. Call [`Requirement::satisfies_in`] or
-//! [`Requirement::evaluate_in`] for the context answer, because the inherent
-//! [`Requirement::evaluate`] shadows [`Condition::evaluate`].
+//! [`Requirement::Named`] work there. Call [`Requirement::satisfies_in`] for
+//! the context answer, because the inherent [`Requirement::evaluate`] shadows
+//! [`Condition::evaluate`].
 //!
 //! [`effects::grant`] and [`effects::revoke`] move a capability in or out of
 //! the set. The evaluator does not care which source granted what.
@@ -83,10 +83,10 @@
 //! [`Requirement::optional`] gives the keys inside a choice. Those are the
 //! solid and dashed edges of a technology tree.
 //!
-//! The registry answers what a tree view needs: [`Unlocks::status`],
-//! [`Unlocks::available`], [`Unlocks::dependencies`],
-//! [`Unlocks::dependents`], and [`Unlocks::rank`] for the column of a layout.
-//! [`Unlocks::validate`] reports cycles and content nothing can reach.
+//! The registry answers what a tree view needs: [`Unlocks::is_available`],
+//! [`Unlocks::available`], [`Unlocks::dependencies`], and
+//! [`Unlocks::rank`] for the column of a layout. [`Unlocks::validate`]
+//! reports cycles and content nothing can reach.
 //!
 //! # Closures and data
 //!
@@ -120,9 +120,8 @@
 //!
 //! The runner reports [`RunnerEvent`] values; the host drains them with
 //! [`Runner::drain_events`] and decides how to log them. [`Context::note`]
-//! adds location-tagged notes from inside a step. [`Condition::explain`]
-//! returns an [`Explanation`] tree for any condition, including one whose
-//! capability key type the caller does not know.
+//! adds location-tagged notes from inside a step. An [`Evaluation`] prints
+//! itself as a ✓/✗ tree.
 //!
 //! # Feature flags
 //!
@@ -140,12 +139,10 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
-mod capability;
 mod completion;
 mod context;
-mod evaluation;
 mod flow_model;
-mod requirement;
+mod rules;
 mod runner;
 mod sequence;
 mod source;
@@ -157,20 +154,18 @@ pub mod conditions;
 pub mod effects;
 pub mod steps;
 
-pub use capability::CapabilitySet;
 pub use completion::Completion;
 pub use context::{ChainFlags, Context, TypeMap};
-pub use evaluation::Evaluation;
 pub use flow_model::{FlowModel, RailNode, RailShape};
-pub use requirement::{Nothing, Requirement, Rule};
+pub use rules::{CapabilitySet, Evaluation, Nothing, Requirement, Rule};
 pub use runner::{
     AbortReason, ChainGuard, Outcome, Runner, RunnerConfig, RunnerEvent, SkipReason, StartError,
 };
 pub use sequence::{Iter, Library, Sequence, ValidationWarning};
 pub use source::{SequenceFacts, SequenceRef, SequenceSource};
 pub use step::{Flow, IntoProgress, Progress, Step, StepFacts, StepRun};
-pub use unlocks::{Status, Unlock, UnlockWarning, Unlocks};
-pub use vocab::{Condition, Effect, EffectCtx, Explanation, QueryCtx};
+pub use unlocks::{Unlock, UnlockWarning, Unlocks};
+pub use vocab::{Condition, Effect, EffectCtx, QueryCtx};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.
 #[cfg(doctest)]

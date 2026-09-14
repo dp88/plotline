@@ -125,7 +125,7 @@ assert_eq!(tree.rank(&"warp-drive"), Some(1));
 
 let mut held = CapabilitySet::new();
 tree.take(&"fusion-power", &mut held);
-assert!(tree.status(&"warp-drive", &held).unwrap().is_available());
+assert!(tree.is_available(&"warp-drive", &held));
 ```
 
 `rank` is the column a tree layout draws in. `validate` reports cycles and

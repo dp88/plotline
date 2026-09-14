@@ -1,37 +1,13 @@
 //! Unlock graphs built from requirements and grants.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt::Debug;
 
-use crate::capability::CapabilitySet;
-use crate::evaluation::Evaluation;
-use crate::requirement::Requirement;
+use crate::rules::{CapabilitySet, Evaluation, Requirement};
 use crate::vocab::Condition;
-
-/// Whether one node can be taken.
-///
-/// The registry does not track which nodes a player already took, because two
-/// nodes may grant the same capability. Keep that record in the host and
-/// overlay it on this answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Status {
-    /// The requirement holds.
-    Available,
-    /// The requirement fails.
-    Locked,
-}
-
-impl Status {
-    /// Returns whether the node can be taken.
-    #[must_use]
-    pub fn is_available(self) -> bool {
-        self == Self::Available
-    }
-}
 
 /// One node: what it demands, and what it gives.
 ///
@@ -198,11 +174,6 @@ impl<I, K> Unlocks<I, K> {
     pub fn ids(&self) -> alloc::collections::btree_map::Keys<'_, I, Unlock<K>> {
         self.nodes.keys()
     }
-
-    /// Iterates over the nodes in identifier order.
-    pub fn iter(&self) -> alloc::collections::btree_map::Iter<'_, I, Unlock<K>> {
-        self.nodes.iter()
-    }
 }
 
 impl<I, K> Default for Unlocks<I, K> {
@@ -217,35 +188,23 @@ impl<I: Ord, K> Unlocks<I, K> {
         self.nodes.insert(id, unlock)
     }
 
-    /// Removes a node and returns it.
-    pub fn remove(&mut self, id: &I) -> Option<Unlock<K>> {
-        self.nodes.remove(id)
-    }
-
     /// Returns a node.
     #[must_use]
     pub fn get(&self, id: &I) -> Option<&Unlock<K>> {
         self.nodes.get(id)
     }
-
-    /// Returns whether the graph holds this node.
-    #[must_use]
-    pub fn contains(&self, id: &I) -> bool {
-        self.nodes.contains_key(id)
-    }
 }
 
 impl<I: Ord, K: Ord> Unlocks<I, K> {
-    /// Returns whether a node can be taken, or `None` when it is missing.
+    /// Returns whether a node can be taken. A missing node never can.
+    ///
+    /// The registry does not track which nodes a player already took, because
+    /// two nodes may grant the same capability. Keep that record in the host
+    /// and overlay it on this answer.
     #[must_use]
-    pub fn status(&self, id: &I, held: &CapabilitySet<K>) -> Option<Status> {
-        self.get(id).map(|node| {
-            if node.requires.satisfies(held) {
-                Status::Available
-            } else {
-                Status::Locked
-            }
-        })
+    pub fn is_available(&self, id: &I, held: &CapabilitySet<K>) -> bool {
+        self.get(id)
+            .is_some_and(|node| node.requires.satisfies(held))
     }
 
     /// Iterates over the nodes that can be taken now.
@@ -253,14 +212,6 @@ impl<I: Ord, K: Ord> Unlocks<I, K> {
         self.nodes
             .iter()
             .filter(move |(_, node)| node.requires.satisfies(held))
-            .map(|(id, _)| id)
-    }
-
-    /// Iterates over the nodes that cannot be taken yet.
-    pub fn locked<'a>(&'a self, held: &'a CapabilitySet<K>) -> impl Iterator<Item = &'a I> + 'a {
-        self.nodes
-            .iter()
-            .filter(move |(_, node)| !node.requires.satisfies(held))
             .map(|(id, _)| id)
     }
 
@@ -344,15 +295,6 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
         found.into_iter().collect()
     }
 
-    /// Returns the nodes that require this one outright.
-    #[must_use]
-    pub fn dependents(&self, id: &I) -> Vec<&I> {
-        self.nodes
-            .keys()
-            .filter(|other| *other != id && self.dependencies(other).contains(&id))
-            .collect()
-    }
-
     /// Returns how deep a node sits, counting only required dependencies.
     ///
     /// A node with no required dependency ranks 0. Use it as the column index
@@ -363,9 +305,7 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
     where
         I: Clone,
     {
-        let mut done = BTreeMap::new();
-        let mut visiting = BTreeSet::new();
-        self.rank_of(id, &mut done, &mut visiting)
+        self.ranks().get(id).copied()
     }
 
     /// Returns the rank of every node that has one.
@@ -398,9 +338,6 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
     {
         if let Some(known) = done.get(id) {
             return *known;
-        }
-        if !self.contains(id) {
-            return None;
         }
         if !visiting.insert(id.clone()) {
             return None; // a cycle; the caller records it as unrankable
@@ -471,23 +408,6 @@ impl<I: Ord + Clone, K: Ord + Clone + Any + Debug> Unlocks<I, K> {
     }
 }
 
-impl<'a, I, K> IntoIterator for &'a Unlocks<I, K> {
-    type Item = (&'a I, &'a Unlock<K>);
-    type IntoIter = alloc::collections::btree_map::Iter<'a, I, Unlock<K>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl<I: Ord, K> FromIterator<(I, Unlock<K>)> for Unlocks<I, K> {
-    fn from_iter<T: IntoIterator<Item = (I, Unlock<K>)>>(iter: T) -> Self {
-        Self {
-            nodes: iter.into_iter().collect(),
-        }
-    }
-}
-
 impl<I, K> core::fmt::Display for UnlockWarning<I, K>
 where
     I: Debug,
@@ -503,9 +423,7 @@ where
             }
             Self::Cycle { id } => write!(f, "{id:?} sits on a dependency cycle"),
             Self::GrantsNothing { id } => write!(f, "{id:?} grants nothing"),
-            Self::Requirement { id, message } => {
-                f.write_str(&format!("{id:?} requirement: {message}"))
-            }
+            Self::Requirement { id, message } => write!(f, "{id:?} requirement: {message}"),
         }
     }
 }
@@ -558,9 +476,9 @@ mod tests {
     fn a_free_node_is_available_from_nothing() {
         let tree = tree();
         let held = CapabilitySet::new();
-        assert_eq!(tree.status(&"fusion", &held), Some(Status::Available));
-        assert_eq!(tree.status(&"warp", &held), Some(Status::Locked));
-        assert_eq!(tree.status(&"absent", &held), None);
+        assert!(tree.is_available(&"fusion", &held));
+        assert!(!tree.is_available(&"warp", &held));
+        assert!(!tree.is_available(&"absent", &held));
     }
 
     #[test]
@@ -568,10 +486,7 @@ mod tests {
         let tree = tree();
         let held = CapabilitySet::from([Cap::Fusion]);
         let available: Vec<_> = tree.available(&held).copied().collect();
-        let locked: Vec<_> = tree.locked(&held).copied().collect();
         assert_eq!(available, vec!["antimatter", "fusion", "warp"]);
-        assert_eq!(locked, vec!["cloaking", "shields"]);
-        assert_eq!(available.len() + locked.len(), tree.len());
     }
 
     #[test]
@@ -580,8 +495,6 @@ mod tests {
         assert_eq!(tree.dependencies(&"warp"), vec![&"fusion"]);
         assert_eq!(tree.dependencies(&"cloaking"), vec![&"warp"]);
         assert!(tree.dependencies(&"fusion").is_empty());
-        assert_eq!(tree.dependents(&"fusion"), vec![&"antimatter", &"warp"]);
-        assert_eq!(tree.dependents(&"cloaking"), Vec::<&&str>::new());
     }
 
     #[test]
@@ -595,7 +508,6 @@ mod tests {
             tree.optional_dependencies(&"shields"),
             vec![&"antimatter", &"warp"]
         );
-        assert!(!tree.dependents(&"warp").contains(&&"shields"));
     }
 
     #[test]
@@ -656,8 +568,9 @@ mod tests {
     fn a_frontier_falls_out_of_the_missing_count() {
         let tree = tree();
         let held = CapabilitySet::new();
+        // A satisfied node has no gap at all, so one gap means locked.
         let frontier: Vec<_> = tree
-            .locked(&held)
+            .ids()
             .filter(|id| tree.missing(id, &held).is_some_and(|gap| gap.len() == 1))
             .copied()
             .collect();
