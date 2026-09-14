@@ -18,6 +18,7 @@ use crate::vocab::{Condition, Explanation, QueryCtx};
 /// Use it through [`Rule`] when a requirement tree holds flags and named
 /// checks but no capabilities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Nothing {}
 
 /// A requirement with no capability leaves.

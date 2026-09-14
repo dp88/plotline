@@ -2,8 +2,6 @@
 //!
 //! Run it with `cargo run --example unlocks`.
 
-use core::task::Poll;
-
 use plotline::{
     CapabilitySet, Explanation, Library, QueryCtx, Requirement, Runner, Sequence, TypeMap,
     conditions, effects, steps,
@@ -118,7 +116,7 @@ fn colonize(requirement: Requirement<Cap>, held: CapabilitySet<Cap>) {
 
     let mut runner = Runner::default();
     runner.start(landing, None).unwrap();
-    while let Poll::Pending = runner.advance(&mut library, &mut services) {}
+    while runner.advance(&mut library, &mut services).is_pending() {}
 
     let held = services.get::<CapabilitySet<Cap>>().unwrap();
     println!("capabilities now: {:?}", held.iter().collect::<Vec<_>>());

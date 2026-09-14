@@ -1,7 +1,7 @@
 //! Rules survive a trip through a data file.
 #![cfg(feature = "serde")]
 
-use plotline::{CapabilitySet, Evaluation, Requirement};
+use plotline::{CapabilitySet, Evaluation, Requirement, Rule};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -118,4 +118,17 @@ fn an_evaluation_round_trips() {
 
     assert_eq!(decoded, result);
     assert_eq!(decoded.satisfied(), result.satisfied());
+}
+
+#[test]
+fn a_rule_without_capabilities_round_trips() {
+    let rule = Rule::all([
+        Rule::flag("met-the-elder"),
+        Rule::not(Rule::flag("refused-the-quest")),
+        Rule::named("carries-the-ring"),
+    ]);
+
+    let encoded = serde_json::to_string(&rule).unwrap();
+    let decoded: Rule = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, rule);
 }
