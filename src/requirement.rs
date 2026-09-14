@@ -210,6 +210,101 @@ impl<K: Ord + Clone> Requirement<K> {
         keys
     }
 
+    /// Returns the capabilities that must be held, whatever else happens.
+    ///
+    /// The walk descends [`Requirement::All`] nodes only, so it reports the
+    /// same keys that [`Evaluation::missing`] reports against an empty set. A
+    /// key inside [`Requirement::Any`], [`Requirement::AtLeast`], or
+    /// [`Requirement::Not`] is never returned, because none of those demand
+    /// one particular key.
+    ///
+    /// This is the hard edge set of a dependency graph.
+    ///
+    /// ```
+    /// use plotline::Requirement;
+    ///
+    /// let rule = Requirement::all([
+    ///     Requirement::has("fusion"),
+    ///     Requirement::any([Requirement::has("warp"), Requirement::has("gate")]),
+    /// ]);
+    /// assert_eq!(rule.required().iter().copied().collect::<Vec<_>>(), ["fusion"]);
+    /// ```
+    #[must_use]
+    pub fn required(&self) -> CapabilitySet<K> {
+        let mut keys = CapabilitySet::new();
+        self.collect_required(&mut keys);
+        keys
+    }
+
+    fn collect_required(&self, keys: &mut CapabilitySet<K>) {
+        match self {
+            Self::Has(key) => {
+                keys.insert(key.clone());
+            }
+            Self::All(items) => {
+                for item in items {
+                    item.collect_required(keys);
+                }
+            }
+            // A choice demands no one key, and Not forbids rather than demands.
+            Self::Any(_)
+            | Self::AtLeast { .. }
+            | Self::Not(_)
+            | Self::Flag { .. }
+            | Self::Named(_) => {}
+        }
+    }
+
+    /// Returns the capabilities that help but are not required.
+    ///
+    /// These are the keys inside a [`Requirement::Any`] or a
+    /// [`Requirement::AtLeast`]. The walk never enters a
+    /// [`Requirement::Not`], because a forbidden key does not help.
+    ///
+    /// This is the soft edge set of a dependency graph.
+    ///
+    /// ```
+    /// use plotline::Requirement;
+    ///
+    /// let rule = Requirement::all([
+    ///     Requirement::has("fusion"),
+    ///     Requirement::any([Requirement::has("warp"), Requirement::has("gate")]),
+    /// ]);
+    /// assert_eq!(rule.optional().iter().copied().collect::<Vec<_>>(), ["gate", "warp"]);
+    /// ```
+    #[must_use]
+    pub fn optional(&self) -> CapabilitySet<K> {
+        let mut keys = CapabilitySet::new();
+        self.collect_optional(&mut keys, false);
+        keys
+    }
+
+    fn collect_optional(&self, keys: &mut CapabilitySet<K>, inside_choice: bool) {
+        match self {
+            Self::Has(key) => {
+                if inside_choice {
+                    keys.insert(key.clone());
+                }
+            }
+            Self::All(items) => {
+                for item in items {
+                    item.collect_optional(keys, inside_choice);
+                }
+            }
+            Self::Any(items)
+            | Self::AtLeast {
+                requirements: items,
+                ..
+            } => {
+                for item in items {
+                    item.collect_optional(keys, true);
+                }
+            }
+            // A forbidden key never helps.
+            Self::Not(_) | Self::Flag { .. } | Self::Named(_) => {}
+        }
+    }
+
     fn collect_capabilities(&self, keys: &mut CapabilitySet<K>) {
         match self {
             Self::Has(key) => {
@@ -506,6 +601,61 @@ mod tests {
 
     fn caps(keys: &[Tech]) -> CapabilitySet<Tech> {
         keys.iter().copied().collect()
+    }
+
+    #[test]
+    fn required_reports_only_unavoidable_keys() {
+        let rule = Requirement::all([
+            Requirement::has(Tech::A),
+            Requirement::all([Requirement::has(Tech::B)]),
+            Requirement::any([Requirement::has(Tech::C)]),
+            Requirement::not(Requirement::has(Tech::D)),
+        ]);
+        let required: Vec<_> = rule.required().iter().copied().collect();
+        assert_eq!(required, vec![Tech::A, Tech::B]);
+    }
+
+    #[test]
+    fn required_matches_missing_against_an_empty_set() {
+        let rule = Requirement::all([
+            Requirement::has(Tech::A),
+            Requirement::any([Requirement::has(Tech::B), Requirement::has(Tech::C)]),
+        ]);
+        let missing = rule.evaluate(&CapabilitySet::new()).missing();
+        assert_eq!(rule.required().iter().copied().collect::<Vec<_>>(), missing);
+    }
+
+    #[test]
+    fn optional_reports_choices_and_skips_forbidden_keys() {
+        let rule = Requirement::all([
+            Requirement::has(Tech::A),
+            Requirement::any([Requirement::has(Tech::B), Requirement::has(Tech::C)]),
+            Requirement::at_least(1, [Requirement::has(Tech::D)]),
+            Requirement::not(Requirement::has(Tech::A)),
+        ]);
+        let optional: Vec<_> = rule.optional().iter().copied().collect();
+        assert_eq!(optional, vec![Tech::B, Tech::C, Tech::D]);
+    }
+
+    #[test]
+    fn optional_keeps_nested_all_inside_a_choice() {
+        let rule = Requirement::any([
+            Requirement::all([Requirement::has(Tech::A), Requirement::has(Tech::B)]),
+            Requirement::has(Tech::C),
+        ]);
+        assert!(rule.required().is_empty(), "a choice demands no one key");
+        assert_eq!(rule.optional().len(), 3);
+    }
+
+    #[test]
+    fn required_and_optional_do_not_overlap_for_a_plain_tree() {
+        let rule = Requirement::all([
+            Requirement::has(Tech::A),
+            Requirement::any([Requirement::has(Tech::B), Requirement::has(Tech::C)]),
+        ]);
+        for key in &rule.required() {
+            assert!(!rule.optional().contains(key));
+        }
     }
 
     #[test]

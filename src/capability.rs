@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 /// caps.insert(Tech::Warp);
 /// assert_eq!(caps.len(), 2);
 /// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[cfg_attr(
@@ -102,6 +102,12 @@ impl<K: Ord> CapabilitySet<K> {
     }
 }
 
+impl<K> Default for CapabilitySet<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Ord> Extend<K> for CapabilitySet<K> {
     fn extend<T: IntoIterator<Item = K>>(&mut self, iter: T) {
         self.keys.extend(iter);
@@ -155,7 +161,8 @@ mod tests {
 
     #[test]
     fn a_new_set_is_empty() {
-        let caps = CapabilitySet::<Tech>::new();
+        // Tech has no Default, which proves the impl carries no K bound.
+        let caps = CapabilitySet::<Tech>::default();
         assert!(caps.is_empty());
         assert_eq!(caps.len(), 0);
         assert!(!caps.contains(&Tech::Fusion));

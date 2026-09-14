@@ -134,6 +134,7 @@ mod runner;
 mod sequence;
 mod source;
 mod step;
+mod unlocks;
 mod vocab;
 
 pub mod conditions;
@@ -152,6 +153,7 @@ pub use runner::{
 pub use sequence::{Iter, Library, Sequence, ValidationWarning};
 pub use source::{SequenceFacts, SequenceRef, SequenceSource};
 pub use step::{Flow, IntoProgress, Progress, Step, StepFacts, StepRun};
+pub use unlocks::{Status, Unlock, UnlockWarning, Unlocks};
 pub use vocab::{Condition, Effect, EffectCtx, Explanation, QueryCtx};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.
