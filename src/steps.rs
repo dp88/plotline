@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn branch_propagates_condition_warnings() {
         let branch = Branch {
-            condition: Some(Box::new(conditions::Not::default())),
+            condition: Some(Box::new(crate::Rule::flag(""))),
             if_true: Some(SequenceRef::from_raw(1)),
             if_false: None,
         };

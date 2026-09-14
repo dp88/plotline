@@ -3,7 +3,7 @@
 use core::task::Poll;
 
 use plotline::{
-    Completion, Library, Progress, Runner, RunnerEvent, Sequence, TypeMap, conditions, steps,
+    Completion, Library, Progress, Rule, Runner, RunnerEvent, Sequence, TypeMap, steps,
 };
 
 /// Host state used by the example.
@@ -52,7 +52,7 @@ fn main() {
         ctx.set_flag("said_yes", said_yes);
     }));
     hub_body.push(steps::Branch {
-        condition: Some(Box::new(conditions::Flag::is_set("said_yes"))),
+        condition: Some(Box::new(Rule::flag("said_yes"))),
         if_true: Some(accepted),
         if_false: Some(refused),
     });

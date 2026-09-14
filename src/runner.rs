@@ -953,7 +953,7 @@ mod tests {
                     sequence: Some(sub),
                 })
                 .with_step(steps::Branch {
-                    condition: Some(Box::new(crate::conditions::Flag::is_set("accepted"))),
+                    condition: Some(Box::new(crate::Rule::flag("accepted"))),
                     if_true: Some(happy),
                     if_false: None,
                 }),

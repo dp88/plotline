@@ -77,9 +77,12 @@ extern crate alloc;
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+mod capability;
 mod completion;
 mod context;
+mod evaluation;
 mod flow_model;
+mod requirement;
 mod runner;
 mod sequence;
 mod source;
@@ -90,16 +93,19 @@ pub mod conditions;
 pub mod effects;
 pub mod steps;
 
+pub use capability::CapabilitySet;
 pub use completion::Completion;
 pub use context::{ChainFlags, Context, TypeMap};
+pub use evaluation::Evaluation;
 pub use flow_model::{FlowModel, RailNode, RailShape};
+pub use requirement::{Nothing, Requirement, Rule};
 pub use runner::{
     AbortReason, ChainGuard, Outcome, Runner, RunnerConfig, RunnerEvent, SkipReason, StartError,
 };
 pub use sequence::{Iter, Library, Sequence, ValidationWarning};
 pub use source::{SequenceFacts, SequenceRef, SequenceSource};
 pub use step::{Flow, IntoProgress, Progress, Step, StepFacts, StepRun};
-pub use vocab::{Condition, Effect, EffectCtx, QueryCtx};
+pub use vocab::{Condition, Effect, EffectCtx, Explanation, QueryCtx};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.
 #[cfg(doctest)]

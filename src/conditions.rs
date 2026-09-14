@@ -1,10 +1,13 @@
 //! Built-in conditions.
+//!
+//! Boolean composition lives in [`Requirement`](crate::Requirement), which is
+//! data rather than boxed closures. Use [`check`] for a one-off Rust closure,
+//! and [`Checks`] to give closures names that a stored requirement can call.
 
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::vocab::{Condition, QueryCtx};
 
@@ -82,189 +85,125 @@ where
     }
 }
 
-/// Inverts a condition. A missing condition evaluates to `false`.
+/// Named conditions that a stored requirement can call.
+///
+/// A [`Requirement`](crate::Requirement) is data, so it cannot hold a closure.
+/// It holds a name instead, and
+/// [`Requirement::Named`](crate::Requirement::Named) looks that name up here.
+/// This is how a rule loaded from a file reaches host state that the
+/// capability vocabulary does not cover.
+///
+/// Put the registry in the service [`TypeMap`](crate::TypeMap). An
+/// unregistered name evaluates to false;
+/// [`Requirement::unknown_checks`](crate::Requirement::unknown_checks) finds
+/// those names before they run.
+///
+/// ```
+/// use plotline::{QueryCtx, Rule, TypeMap, conditions};
+///
+/// struct Empire {
+///     colonies: usize,
+/// }
+///
+/// let mut checks = conditions::Checks::new();
+/// checks.register(
+///     "three-colonies",
+///     conditions::check("Three or more colonies", |query| {
+///         query.service::<Empire>().is_some_and(|e| e.colonies >= 3)
+///     }),
+/// );
+///
+/// let mut services = TypeMap::new();
+/// services.insert(Empire { colonies: 4 });
+/// services.insert(checks);
+///
+/// let rule = Rule::named("three-colonies");
+/// assert!(rule.satisfies_in(&QueryCtx {
+///     target: None,
+///     chain: None,
+///     caps: &services,
+/// }));
+/// ```
 #[derive(Default)]
-pub struct Not {
-    /// The condition to invert.
-    pub inner: Option<Box<dyn Condition>>,
+pub struct Checks {
+    entries: BTreeMap<String, Box<dyn Condition>>,
 }
 
-impl Condition for Not {
-    fn summary(&self) -> String {
-        match &self.inner {
-            Some(inner) => format!("Not ({})", inner.summary()),
-            None => "Not (missing condition)".to_owned(),
-        }
+impl Checks {
+    /// Creates an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    fn warning(&self) -> Option<String> {
-        match &self.inner {
-            Some(inner) => inner
+    /// Registers a condition. Returns whether it replaced an entry.
+    pub fn register(
+        &mut self,
+        name: impl Into<String>,
+        condition: impl Condition + 'static,
+    ) -> bool {
+        self.entries
+            .insert(name.into(), Box::new(condition))
+            .is_some()
+    }
+
+    /// Removes a condition. Returns whether the registry changed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.entries.remove(name).is_some()
+    }
+
+    /// Returns the registered condition.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&dyn Condition> {
+        self.entries.get(name).map(AsRef::as_ref)
+    }
+
+    /// Returns whether a name is registered.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.entries.contains_key(name)
+    }
+
+    /// Iterates over the registered names in order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+
+    /// Returns the number of registered conditions.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the registry is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns the first registered condition that reports a warning.
+    #[must_use]
+    pub fn warning(&self) -> Option<String> {
+        self.entries.iter().find_map(|(name, condition)| {
+            condition
                 .warning()
-                .map(|warning| format!("Inner condition: {warning}")),
-            None => Some("No condition to invert; this evaluates false.".to_owned()),
-        }
-    }
-
-    fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
-        match &self.inner {
-            Some(inner) => !inner.evaluate(query),
-            None => false,
-        }
+                .map(|warning| alloc::format!("Check '{name}': {warning}"))
+        })
     }
 }
 
-/// Creates an inverted condition.
-#[must_use]
-pub fn not(condition: impl Condition + 'static) -> Not {
-    Not {
-        inner: Some(Box::new(condition)),
-    }
-}
-
-/// True when every inner condition is true. An empty list is true.
-#[derive(Default)]
-pub struct All {
-    /// Conditions to evaluate.
-    pub conditions: Vec<Box<dyn Condition>>,
-}
-
-impl Condition for All {
-    fn summary(&self) -> String {
-        format!("All of {}", self.conditions.len())
-    }
-
-    fn warning(&self) -> Option<String> {
-        self.conditions
-            .iter()
-            .enumerate()
-            .find_map(|(index, condition)| {
-                condition
-                    .warning()
-                    .map(|warning| format!("Condition {index}: {warning}"))
-            })
-    }
-
-    fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
-        self.conditions.iter().all(|c| c.evaluate(query))
-    }
-}
-
-/// Creates a condition that requires every supplied condition.
-#[must_use]
-pub fn all(conditions: impl IntoIterator<Item = Box<dyn Condition>>) -> All {
-    All {
-        conditions: conditions.into_iter().collect(),
-    }
-}
-
-/// True when any inner condition is true. An empty list is false.
-#[derive(Default)]
-pub struct Any {
-    /// Conditions to evaluate.
-    pub conditions: Vec<Box<dyn Condition>>,
-}
-
-impl Condition for Any {
-    fn summary(&self) -> String {
-        format!("Any of {}", self.conditions.len())
-    }
-
-    fn warning(&self) -> Option<String> {
-        self.conditions
-            .iter()
-            .enumerate()
-            .find_map(|(index, condition)| {
-                condition
-                    .warning()
-                    .map(|warning| format!("Condition {index}: {warning}"))
-            })
-    }
-
-    fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
-        self.conditions.iter().any(|c| c.evaluate(query))
-    }
-}
-
-/// Creates a condition that accepts any supplied condition.
-#[must_use]
-pub fn any(conditions: impl IntoIterator<Item = Box<dyn Condition>>) -> Any {
-    Any {
-        conditions: conditions.into_iter().collect(),
-    }
-}
-
-/// Reads a chain flag. Outside a chain, it evaluates to `false`.
-#[derive(Clone, Debug, Default)]
-pub struct Flag {
-    /// Flag name.
-    pub name: String,
-    /// Expected value.
-    pub expected: bool,
-}
-
-impl Flag {
-    /// Creates a condition that expects the flag to be set.
-    #[must_use]
-    pub fn is_set(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            expected: true,
-        }
-    }
-
-    /// Creates a condition that expects the flag to be clear.
-    #[must_use]
-    pub fn is_clear(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            expected: false,
-        }
-    }
-}
-
-/// Creates a condition that expects the flag to be set.
-#[must_use]
-pub fn flag(name: impl Into<String>) -> Flag {
-    Flag::is_set(name)
-}
-
-/// Creates a condition that expects the flag to be clear.
-#[must_use]
-pub fn flag_clear(name: impl Into<String>) -> Flag {
-    Flag::is_clear(name)
-}
-
-impl Condition for Flag {
-    fn summary(&self) -> String {
-        format!("Flag '{}' is {}", self.name, self.expected)
-    }
-
-    fn warning(&self) -> Option<String> {
-        self.name
-            .trim()
-            .is_empty()
-            .then(|| "No flag name set.".to_owned())
-    }
-
-    fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
-        match query.chain {
-            Some(chain) => chain.flag(&self.name) == self.expected,
-            None => false,
-        }
+impl core::fmt::Debug for Checks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.names()).finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::borrow::ToOwned;
-    use alloc::boxed::Box;
-
-    use alloc::string::String;
-    use alloc::vec;
+    use alloc::vec::Vec;
 
     use super::*;
-    use crate::context::{ChainFlags, TypeMap};
+    use crate::context::TypeMap;
 
     fn bare_query(caps: &TypeMap) -> QueryCtx<'_> {
         QueryCtx {
@@ -274,89 +213,13 @@ mod tests {
         }
     }
 
-    /// A condition that counts its evaluations, for short-circuit proofs.
-    struct Counting {
-        answer: bool,
-        count: alloc::rc::Rc<core::cell::Cell<usize>>,
-    }
-    impl Counting {
-        fn new(answer: bool) -> (Self, alloc::rc::Rc<core::cell::Cell<usize>>) {
-            let count = alloc::rc::Rc::new(core::cell::Cell::new(0));
-            (
-                Self {
-                    answer,
-                    count: count.clone(),
-                },
-                count,
-            )
-        }
-    }
-    impl Condition for Counting {
-        fn summary(&self) -> String {
-            "counting".to_owned()
-        }
-        fn evaluate(&self, _query: &QueryCtx<'_>) -> bool {
-            self.count.set(self.count.get() + 1);
-            self.answer
-        }
-    }
-
     #[test]
-    fn all_of_empty_is_true() {
+    fn always_reports_its_value() {
         let caps = TypeMap::new();
-        assert!(All::default().evaluate(&bare_query(&caps)));
-    }
-
-    #[test]
-    fn any_of_empty_is_false() {
-        let caps = TypeMap::new();
-        assert!(!Any::default().evaluate(&bare_query(&caps)));
-    }
-
-    #[test]
-    fn not_missing_inner_fails_closed() {
-        let caps = TypeMap::new();
-        assert!(!Not::default().evaluate(&bare_query(&caps)));
-        assert!(Not::default().warning().is_some());
-    }
-
-    #[test]
-    fn not_inverts() {
-        let caps = TypeMap::new();
-        let not = Not {
-            inner: Some(Box::new(Always { value: true })),
-        };
-        assert!(!not.evaluate(&bare_query(&caps)));
-    }
-
-    #[test]
-    fn composed_conditions_propagate_nested_warnings() {
-        let nested = not(check("", |_query| true));
-        assert!(nested.warning().unwrap().contains("Inner condition"));
-        let all_conditions = all([Box::new(nested) as Box<dyn Condition>]);
-        assert!(all_conditions.warning().unwrap().contains("Condition 0"));
-    }
-
-    #[test]
-    fn all_short_circuits_on_first_false() {
-        let caps = TypeMap::new();
-        let (counting, count) = Counting::new(true);
-        let all = All {
-            conditions: vec![Box::new(Always { value: false }), Box::new(counting)],
-        };
-        assert!(!all.evaluate(&bare_query(&caps)));
-        assert_eq!(count.get(), 0, "second condition never evaluated");
-    }
-
-    #[test]
-    fn any_short_circuits_on_first_true() {
-        let caps = TypeMap::new();
-        let (counting, count) = Counting::new(false);
-        let any = Any {
-            conditions: vec![Box::new(Always { value: true }), Box::new(counting)],
-        };
-        assert!(any.evaluate(&bare_query(&caps)));
-        assert_eq!(count.get(), 0, "second condition never evaluated");
+        assert!(Always::default().evaluate(&bare_query(&caps)));
+        assert!(!Always { value: false }.evaluate(&bare_query(&caps)));
+        assert_eq!(Always::default().summary(), "Always");
+        assert_eq!(Always { value: false }.summary(), "Never");
     }
 
     #[test]
@@ -370,22 +233,41 @@ mod tests {
     }
 
     #[test]
-    fn flag_without_chain_reads_false() {
+    fn explain_defaults_to_one_leaf() {
         let caps = TypeMap::new();
-        assert!(!Flag::is_set("accepted").evaluate(&bare_query(&caps)));
+        let explanation = Always::default().explain(&bare_query(&caps));
+        assert_eq!(explanation.summary, "Always");
+        assert!(explanation.satisfied);
+        assert!(explanation.children.is_empty());
     }
 
     #[test]
-    fn flag_reads_the_blackboard() {
+    fn registry_stores_and_finds_conditions() {
         let caps = TypeMap::new();
-        let mut chain = ChainFlags::new();
-        chain.set_flag("accepted", true);
-        let query = QueryCtx {
-            target: None,
-            chain: Some(&chain),
-            caps: &caps,
-        };
-        assert!(Flag::is_set("accepted").evaluate(&query));
-        assert!(!Flag::is_set("refused").evaluate(&query));
+        let mut checks = Checks::new();
+        assert!(checks.is_empty());
+        assert!(!checks.register("yes", Always::default()));
+        assert!(checks.register("yes", Always { value: false }), "replaced");
+        assert_eq!(checks.len(), 1);
+        assert!(checks.contains("yes"));
+        assert!(!checks.get("yes").unwrap().evaluate(&bare_query(&caps)));
+        assert!(checks.get("no").is_none());
+        assert!(checks.remove("yes"));
+        assert!(!checks.remove("yes"));
+    }
+
+    #[test]
+    fn registry_names_are_ordered() {
+        let mut checks = Checks::new();
+        checks.register("b", Always::default());
+        checks.register("a", Always::default());
+        assert_eq!(checks.names().collect::<Vec<_>>(), ["a", "b"]);
+    }
+
+    #[test]
+    fn registry_reports_a_member_warning() {
+        let mut checks = Checks::new();
+        checks.register("anonymous", check("", |_query| true));
+        assert!(checks.warning().unwrap().contains("anonymous"));
     }
 }

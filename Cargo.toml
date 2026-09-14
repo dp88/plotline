@@ -19,6 +19,17 @@ all-features = true
 default = ["std"]
 # Enables panic isolation in the runner.
 std = []
+# Derives Serialize and Deserialize for the requirement data types.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", optional = true, default-features = false, features = [
+  "alloc",
+  "derive",
+] }
+
+[dev-dependencies]
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [lints.rust]
 missing_docs = "warn"
