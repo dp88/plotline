@@ -1,7 +1,7 @@
 //! Rules survive a trip through a data file.
 #![cfg(feature = "serde")]
 
-use plotline::{CapabilitySet, Evaluation, Requirement, Rule};
+use plotline::{CapabilitySet, Evaluation, Requirement, Rule, Unlock, Unlocks};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -131,4 +131,50 @@ fn a_rule_without_capabilities_round_trips() {
     let encoded = serde_json::to_string(&rule).unwrap();
     let decoded: Rule = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, rule);
+}
+
+#[test]
+fn a_whole_tree_round_trips() {
+    let mut tree = Unlocks::new();
+    tree.insert("fusion-power", Unlock::free().granting([Tech::Fusion]));
+    tree.insert(
+        "warp-drive",
+        Unlock::new(Requirement::has(Tech::Fusion)).granting([Tech::Warp]),
+    );
+    tree.insert(
+        "cloaking-field",
+        Unlock::new(Requirement::any([
+            Requirement::has(Tech::Warp),
+            Requirement::named("salvaged-hull"),
+        ]))
+        .granting([Tech::Cloaking]),
+    );
+
+    let encoded = serde_json::to_string(&tree).unwrap();
+    let decoded: Unlocks<String, Tech> = serde_json::from_str(&encoded).unwrap();
+
+    assert_eq!(decoded.len(), 3);
+    assert_eq!(
+        decoded.dependencies(&"warp-drive".to_owned()),
+        vec![&"fusion-power".to_owned()]
+    );
+    assert_eq!(decoded.rank(&"warp-drive".to_owned()), Some(1));
+    assert!(decoded.validate(&CapabilitySet::new()).is_empty());
+}
+
+#[test]
+fn a_hand_written_tree_loads() {
+    let document = r#"
+    {
+      "fusion-power": { "requires": { "All": [] }, "grants": ["Fusion"] },
+      "warp-drive": { "requires": { "Has": "Fusion" }, "grants": ["Warp"] }
+    }
+    "#;
+
+    let tree: Unlocks<String, Tech> = serde_json::from_str(document).unwrap();
+    let mut held = CapabilitySet::new();
+
+    assert!(tree.take(&"fusion-power".to_owned(), &mut held));
+    assert!(tree.take(&"warp-drive".to_owned(), &mut held));
+    assert_eq!(held, CapabilitySet::from([Tech::Fusion, Tech::Warp]));
 }
