@@ -34,8 +34,9 @@
 //! host systems and also work outside the runner.
 //!
 //! [`Requirement`] holds a boolean rule as data. [`CapabilitySet`] holds what
-//! an entity has. Together they cover prerequisites, unlocks, permissions,
-//! and habitability without the runner.
+//! an entity has. [`Unlocks`] joins many of them into a graph. Together they
+//! cover prerequisites, technology trees, permissions, and habitability
+//! without the runner.
 //!
 //! # Control flow
 //!
@@ -71,6 +72,21 @@
 //!
 //! [`effects::grant`] and [`effects::revoke`] move a capability in or out of
 //! the set. The evaluator does not care which source granted what.
+//!
+//! # Unlock graphs
+//!
+//! [`Unlocks`] holds nodes that require capabilities and grant them. Nobody
+//! authors its edges. One node grants a key, another requires it, and that is
+//! the arrow, so a requirement and its graph can never drift apart.
+//!
+//! [`Requirement::required`] gives the keys a rule demands outright and
+//! [`Requirement::optional`] gives the keys inside a choice. Those are the
+//! solid and dashed edges of a technology tree.
+//!
+//! The registry answers what a tree view needs: [`Unlocks::status`],
+//! [`Unlocks::available`], [`Unlocks::dependencies`],
+//! [`Unlocks::dependents`], and [`Unlocks::rank`] for the column of a layout.
+//! [`Unlocks::validate`] reports cycles and content nothing can reach.
 //!
 //! # Closures and data
 //!

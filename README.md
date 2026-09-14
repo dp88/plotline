@@ -98,12 +98,47 @@ rule loaded from a file calls a host closure by name.
 Use it for technology prerequisites, equipment requirements, habitability,
 crafting recipes, policies, dialogue choices, and skill unlocks.
 
+## Trees
+
+`Unlocks` collects nodes that require capabilities and grant them. Nobody
+authors the edges. One node grants a key, another requires it, and that is
+the arrow, so a rule and its graph can never drift apart.
+
+```rust
+use plotline::{CapabilitySet, Requirement, Unlock, Unlocks};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Cap {
+    Fusion,
+    Warp,
+}
+
+let mut tree = Unlocks::new();
+tree.insert("fusion-power", Unlock::free().granting([Cap::Fusion]));
+tree.insert(
+    "warp-drive",
+    Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
+);
+
+assert_eq!(tree.dependencies(&"warp-drive"), vec![&"fusion-power"]);
+assert_eq!(tree.rank(&"warp-drive"), Some(1));
+
+let mut held = CapabilitySet::new();
+tree.take(&"fusion-power", &mut held);
+assert!(tree.status(&"warp-drive", &held).unwrap().is_available());
+```
+
+`rank` is the column a tree layout draws in. `validate` reports cycles and
+content nothing can reach.
+
 ## Why
 
 - **Plain data.** A sequence is an ordered list of steps the host defines —
   closures for the simple cases, structs where a step carries state.
 - **Rules you can read.** A `Requirement` clones, compares, prints, and
   serializes. Tools can walk it without running it.
+- **Graphs you do not maintain.** An unlock graph is derived from the rules
+  themselves, so it cannot disagree with them.
 - **Subroutines and jumps.** `Call` enters a subroutine and falling off its
   end returns to the caller; `Return` exits early; `Goto` clears the whole
   call chain before starting its target.
@@ -131,6 +166,8 @@ crafting recipes, policies, dialogue choices, and skill unlocks.
   Run it with `cargo run --example dialog`.
 - [`examples/unlocks.rs`](examples/unlocks.rs) — requirements gating what an
   empire can do. Run it with `cargo run --example unlocks`.
+- [`examples/techtree.rs`](examples/techtree.rs) — a technology tree drawn
+  from derived edges. Run it with `cargo run --example techtree`.
 - [CHANGELOG](CHANGELOG.md)
 - [Issue tracker](https://github.com/dp88/plotline/issues)
 

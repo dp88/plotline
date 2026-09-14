@@ -21,9 +21,17 @@ All notable changes to this project are documented in this file.
   stored requirement can call it through `Requirement::Named`.
 - `effects::grant` and `effects::revoke` move one capability in or out of
   a `CapabilitySet`.
-- Optional `serde` feature for `Requirement`, `CapabilitySet`, and
-  `Evaluation`. Rules are authorable in JSON, RON, or YAML.
-- `examples/unlocks.rs`.
+- `Unlocks<I, K>` and `Unlock<K>`: a graph of nodes that require
+  capabilities and grant them. The edges are derived, never authored.
+  It reports `status`, `available`, `locked`, `providers`,
+  `dependencies`, `optional_dependencies`, `dependents`, `rank`, and
+  `ranks`, and `validate` finds cycles and unreachable content.
+- `Requirement::required` and `Requirement::optional`: the hard and soft
+  edge sets of a dependency graph.
+- Optional `serde` feature for `Requirement`, `CapabilitySet`,
+  `Evaluation`, `Unlock`, and `Unlocks`. Rules and whole trees are
+  authorable in JSON, RON, or YAML.
+- `examples/unlocks.rs` and `examples/techtree.rs`.
 
 ### Removed
 
@@ -31,6 +39,11 @@ All notable changes to this project are documented in this file.
   `not`, `flag`, and `flag_clear` shorthands. `Requirement` replaces them
   with one vocabulary that serializes and inspects. Replace
   `conditions::Flag::is_set("x")` with `Rule::flag("x")`.
+
+### Fixed
+
+- `CapabilitySet::default` no longer demands `K: Default`. The derived
+  implementation added a bound that `BTreeSet` never needed.
 
 ### Note
 

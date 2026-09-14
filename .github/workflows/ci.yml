@@ -36,6 +36,7 @@ jobs:
       - run: cargo test --release --all-features --doc
       - run: cargo run --example dialog
       - run: cargo run --example unlocks
+      - run: cargo run --example techtree
 
   # The `std` feature is a real boundary: without it the runner does not
   # catch panics. Test both sides of it, and keep the bare-metal build that
