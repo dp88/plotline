@@ -131,7 +131,7 @@ fn a_whole_tree_round_trips() {
         decoded.dependencies(&"warp-drive".to_owned()),
         vec![&"fusion-power".to_owned()]
     );
-    assert_eq!(decoded.rank(&"warp-drive".to_owned()), Some(1));
+    assert_eq!(decoded.ranks().get("warp-drive"), Some(&1));
     assert!(decoded.validate(&BTreeSet::new()).is_empty());
 }
 

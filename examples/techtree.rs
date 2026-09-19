@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use plotline::{Requirement, Unlock, Unlocks};
+use plotline::{NodeStatus, Requirement, Unlock, Unlocks};
 
 /// The host owns this vocabulary. The crate never interprets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -109,30 +109,30 @@ fn main() {
 
 /// Prints the tree by rank. Rank is the column a layout would use.
 fn draw(tree: &Tree, held: &BTreeSet<Cap>, taken: &BTreeSet<&str>) {
-    let ranks = tree.ranks();
     let width = tree.ids().map(|id| id.len()).max().unwrap_or(0);
 
-    let mut rows: Vec<_> = tree.ids().map(|id| (ranks.get(id), id)).collect();
-    rows.sort_by_key(|(rank, id)| (rank.copied().unwrap_or(usize::MAX), *id));
+    let mut nodes = tree.view(held, taken);
+    nodes.sort_by_key(|node| (node.rank.unwrap_or(usize::MAX), *node.id));
 
-    for (rank, id) in rows {
-        let mark = match (taken.contains(id), tree.is_available(id, held)) {
-            (true, _) => '●',
-            (false, true) => '○',
-            (false, false) => '·',
+    for node in nodes {
+        let mark = match node.status {
+            NodeStatus::Unlocked => '●',
+            NodeStatus::Available => '○',
+            NodeStatus::Locked => '·',
         };
-        let rank = rank.map_or_else(|| "  ?".into(), |rank| format!("{rank:>3}"));
+        let rank = node
+            .rank
+            .map_or_else(|| "  ?".into(), |rank| format!("{rank:>3}"));
 
         let mut edges = String::new();
-        let hard = tree.dependencies(id);
-        if !hard.is_empty() {
-            let _ = write!(edges, "  after {hard:?}");
+        if !node.dependencies.is_empty() {
+            let _ = write!(edges, "  after {:?}", node.dependencies);
         }
-        let soft = tree.optional_dependencies(id);
-        if !soft.is_empty() {
-            let _ = write!(edges, "  or one of {soft:?}");
+        if !node.optional_dependencies.is_empty() {
+            let _ = write!(edges, "  or one of {:?}", node.optional_dependencies);
         }
 
+        let id = node.id;
         println!(
             "{}",
             format!("{rank}  {mark} {id:width$}{edges}").trim_end()

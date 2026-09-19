@@ -41,10 +41,11 @@
 //! [`Requirement::optional`] gives the keys inside a choice. Those are the
 //! solid and dashed edges of a technology tree.
 //!
-//! The registry answers what a tree view needs: [`Unlocks::is_available`],
-//! [`Unlocks::available`], [`Unlocks::dependencies`], and
-//! [`Unlocks::rank`] for the column of a layout. [`Unlocks::validate`]
-//! reports cycles and content nothing can reach.
+//! [`Unlocks::view`] returns what a tree view draws: each node's
+//! [`NodeStatus`] (unlocked, available, or locked), its layout column, and
+//! both kinds of edge. [`Unlocks::evaluate`] explains a locked node, and
+//! [`Unlocks::take`] applies a node's grants. [`Unlocks::validate`] reports
+//! cycles and content nothing can reach.
 //!
 //! # Feature flags
 //!
@@ -61,7 +62,7 @@ mod rules;
 mod unlocks;
 
 pub use rules::{Evaluation, Has, Requirement};
-pub use unlocks::{Unlock, UnlockWarning, Unlocks};
+pub use unlocks::{NodeStatus, NodeView, Unlock, UnlockWarning, Unlocks};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.
 #[cfg(doctest)]

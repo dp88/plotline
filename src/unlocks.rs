@@ -66,6 +66,7 @@ impl<K: Ord> Unlock<K> {
 
 /// One problem found by [`Unlocks::validate`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UnlockWarning<I, K> {
     /// The node requires a capability that nothing else grants.
     ///
@@ -95,6 +96,36 @@ pub enum UnlockWarning<I, K> {
         /// The warning text.
         message: String,
     },
+}
+
+/// Where one node stands for one entity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeStatus {
+    /// The host's record says the entity took the node.
+    Unlocked,
+    /// The node's requirement holds, and the entity has not taken it.
+    Available,
+    /// The node's requirement does not hold.
+    Locked,
+}
+
+/// Everything a tree view draws for one node. [`Unlocks::view`] returns one
+/// per node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeView<'a, I> {
+    /// The node.
+    pub id: &'a I,
+    /// Where the node stands.
+    pub status: NodeStatus,
+    /// The layout column, or `None` for a node on a dependency cycle. See
+    /// [`Unlocks::ranks`].
+    pub rank: Option<usize>,
+    /// The nodes that must come first. Draw these as solid edges. See
+    /// [`Unlocks::dependencies`].
+    pub dependencies: Vec<&'a I>,
+    /// The nodes that could help instead. Draw these as dashed edges. See
+    /// [`Unlocks::optional_dependencies`].
+    pub optional_dependencies: Vec<&'a I>,
 }
 
 /// A graph of things an entity can unlock.
@@ -207,6 +238,21 @@ impl<I: Ord, K: Ord> Unlocks<I, K> {
             .is_some_and(|node| node.requires.satisfies(holder))
     }
 
+    /// Returns where a node stands, or `None` when it is missing.
+    ///
+    /// `taken` is the host's record of the nodes the entity took. A taken node
+    /// reads [`NodeStatus::Unlocked`] even when its requirement no longer
+    /// holds, because the record, not the rule, says what the entity took.
+    #[must_use]
+    pub fn status(
+        &self,
+        id: &I,
+        holder: &(impl Has<K> + ?Sized),
+        taken: &BTreeSet<I>,
+    ) -> Option<NodeStatus> {
+        self.get(id).map(|node| status_of(id, node, holder, taken))
+    }
+
     /// Iterates over the nodes that can be taken now.
     pub fn available<'a, H: Has<K> + ?Sized>(
         &'a self,
@@ -258,18 +304,6 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
         self.get(id).map(|node| node.requires.evaluate(holder))
     }
 
-    /// Returns the capabilities a node still needs, or `None` when it is missing.
-    ///
-    /// The answer is conservative, like [`Evaluation::missing`]. A node behind
-    /// a choice reports nothing, because no one capability unblocks it.
-    ///
-    /// Filter on the length to build a frontier. A node with exactly one
-    /// missing capability is one step away.
-    #[must_use]
-    pub fn missing(&self, id: &I, holder: &(impl Has<K> + ?Sized)) -> Option<Vec<K>> {
-        self.evaluate(id, holder).map(|result| result.missing())
-    }
-
     /// Returns the nodes that must be taken before this one.
     ///
     /// These are the providers of every capability the requirement demands
@@ -303,23 +337,12 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
         found.into_iter().collect()
     }
 
-    /// Returns how deep a node sits, counting only required dependencies.
-    ///
-    /// A node with no required dependency ranks 0. Use it as the column index
-    /// in a tree layout. A node on a dependency cycle has no rank, and neither
-    /// does a missing node.
-    #[must_use]
-    pub fn rank(&self, id: &I) -> Option<usize>
-    where
-        I: Clone,
-    {
-        self.ranks().get(id).copied()
-    }
-
     /// Returns the rank of every node that has one.
     ///
-    /// A node on a dependency cycle is left out. [`Unlocks::validate`] reports
-    /// those.
+    /// A rank counts how deep a node sits along its required dependencies. A
+    /// node with no required dependency ranks 0. Use it as the column index in
+    /// a tree layout. A node on a dependency cycle has no rank, so it is left
+    /// out. [`Unlocks::validate`] reports those.
     #[must_use]
     pub fn ranks(&self) -> BTreeMap<I, usize>
     where
@@ -366,6 +389,68 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
         visiting.remove(id);
         done.insert(id.clone(), rank);
         rank
+    }
+
+    /// Returns everything a tree view draws, one entry per node, in id order.
+    ///
+    /// Each entry holds the node's status, its rank, and both kinds of edge.
+    /// `taken` is the host's record of the nodes the entity took. Sort the
+    /// entries by rank to lay them out in columns.
+    ///
+    /// ```
+    /// use std::collections::BTreeSet;
+    /// use plotline::{NodeStatus, Requirement, Unlock, Unlocks};
+    ///
+    /// let mut tree = Unlocks::new();
+    /// tree.insert("fusion-power", Unlock::free().granting(["fusion"]));
+    /// tree.insert(
+    ///     "warp-drive",
+    ///     Unlock::new(Requirement::has("fusion")).granting(["warp"]),
+    /// );
+    ///
+    /// let mut held = BTreeSet::new();
+    /// let mut taken = BTreeSet::new();
+    /// tree.take(&"fusion-power", &mut held);
+    /// taken.insert("fusion-power");
+    ///
+    /// let view = tree.view(&held, &taken);
+    /// assert_eq!(view[0].status, NodeStatus::Unlocked);
+    /// assert_eq!(view[1].id, &"warp-drive");
+    /// assert_eq!(view[1].status, NodeStatus::Available);
+    /// assert_eq!(view[1].rank, Some(1));
+    /// assert_eq!(view[1].dependencies, vec![&"fusion-power"]);
+    /// ```
+    #[must_use]
+    pub fn view(&self, holder: &(impl Has<K> + ?Sized), taken: &BTreeSet<I>) -> Vec<NodeView<'_, I>>
+    where
+        I: Clone,
+    {
+        let ranks = self.ranks();
+        self.nodes
+            .iter()
+            .map(|(id, node)| NodeView {
+                id,
+                status: status_of(id, node, holder, taken),
+                rank: ranks.get(id).copied(),
+                dependencies: self.dependencies(id),
+                optional_dependencies: self.optional_dependencies(id),
+            })
+            .collect()
+    }
+}
+
+fn status_of<I: Ord, K>(
+    id: &I,
+    node: &Unlock<K>,
+    holder: &(impl Has<K> + ?Sized),
+    taken: &BTreeSet<I>,
+) -> NodeStatus {
+    if taken.contains(id) {
+        NodeStatus::Unlocked
+    } else if node.requires.satisfies(holder) {
+        NodeStatus::Available
+    } else {
+        NodeStatus::Locked
     }
 }
 
@@ -597,7 +682,8 @@ mod tests {
 
         assert!(!tree.is_available(&"fleet-doctrine", &empire));
         assert_eq!(
-            tree.missing(&"fleet-doctrine", &empire),
+            tree.evaluate(&"fleet-doctrine", &empire)
+                .map(|result| result.missing()),
             Some(vec![Cap::Shields])
         );
 
@@ -618,27 +704,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_reports_the_shortfall_for_one_node() {
-        let tree = tree();
-        let held = BTreeSet::new();
-        assert_eq!(tree.missing(&"warp", &held), Some(vec![Cap::Fusion]));
-        assert_eq!(tree.missing(&"fusion", &held), Some(vec![]));
-        assert_eq!(
-            tree.missing(&"shields", &held),
-            Some(vec![]),
-            "a choice names no single shortfall"
-        );
-        assert_eq!(tree.missing(&"absent", &held), None);
-    }
-
-    #[test]
     fn a_frontier_falls_out_of_the_missing_count() {
         let tree = tree();
         let held = BTreeSet::new();
         // A satisfied node has no gap at all, so one gap means locked.
         let frontier: Vec<_> = tree
             .ids()
-            .filter(|id| tree.missing(id, &held).is_some_and(|gap| gap.len() == 1))
+            .filter(|id| {
+                tree.evaluate(id, &held)
+                    .is_some_and(|result| result.missing().len() == 1)
+            })
             .copied()
             .collect();
         assert_eq!(frontier, vec!["antimatter", "cloaking", "warp"]);
@@ -650,17 +725,22 @@ mod tests {
         let result = tree.evaluate(&"cloaking", &BTreeSet::new()).unwrap();
         assert!(!result.satisfied());
         assert_eq!(result.missing(), vec![Cap::Warp]);
+        assert!(tree.evaluate(&"absent", &BTreeSet::new()).is_none());
+    }
+
+    fn rank(tree: &Unlocks<&'static str, Cap>, id: &'static str) -> Option<usize> {
+        tree.ranks().get(id).copied()
     }
 
     #[test]
     fn rank_counts_required_depth() {
         let tree = tree();
-        assert_eq!(tree.rank(&"fusion"), Some(0));
-        assert_eq!(tree.rank(&"warp"), Some(1));
-        assert_eq!(tree.rank(&"antimatter"), Some(1));
-        assert_eq!(tree.rank(&"cloaking"), Some(2));
-        assert_eq!(tree.rank(&"shields"), Some(0), "no required dependency");
-        assert_eq!(tree.rank(&"absent"), None);
+        assert_eq!(rank(&tree, "fusion"), Some(0));
+        assert_eq!(rank(&tree, "warp"), Some(1));
+        assert_eq!(rank(&tree, "antimatter"), Some(1));
+        assert_eq!(rank(&tree, "cloaking"), Some(2));
+        assert_eq!(rank(&tree, "shields"), Some(0), "no required dependency");
+        assert_eq!(rank(&tree, "absent"), None);
     }
 
     #[test]
@@ -680,17 +760,64 @@ mod tests {
             ]))
             .granting([Cap::Cloaking]),
         );
-        assert_eq!(tree.rank(&"c"), Some(2));
+        assert_eq!(rank(&tree, "c"), Some(2));
     }
 
     #[test]
-    fn ranks_matches_rank_for_every_node() {
+    fn a_view_shows_each_status() {
         let tree = tree();
+        let mut held = BTreeSet::new();
+        let mut taken = BTreeSet::new();
+        tree.take(&"fusion", &mut held);
+        taken.insert("fusion");
+
+        let statuses: Vec<_> = tree
+            .view(&held, &taken)
+            .into_iter()
+            .map(|node| (*node.id, node.status))
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("antimatter", NodeStatus::Available),
+                ("cloaking", NodeStatus::Locked),
+                ("fusion", NodeStatus::Unlocked),
+                ("shields", NodeStatus::Locked),
+                ("warp", NodeStatus::Available),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_view_agrees_with_the_single_queries() {
+        let tree = tree();
+        let held = BTreeSet::from([Cap::Fusion, Cap::Warp]);
+        let taken = BTreeSet::from(["fusion"]);
         let ranks = tree.ranks();
-        assert_eq!(ranks.len(), tree.len());
-        for (id, rank) in &ranks {
-            assert_eq!(tree.rank(id), Some(*rank));
+
+        let view = tree.view(&held, &taken);
+        assert_eq!(view.len(), tree.len());
+        for node in view {
+            assert_eq!(Some(node.status), tree.status(node.id, &held, &taken));
+            assert_eq!(node.rank, ranks.get(node.id).copied());
+            assert_eq!(node.dependencies, tree.dependencies(node.id));
+            assert_eq!(
+                node.optional_dependencies,
+                tree.optional_dependencies(node.id)
+            );
         }
+        assert_eq!(tree.status(&"absent", &held, &taken), None);
+    }
+
+    #[test]
+    fn a_taken_node_stays_unlocked_when_its_rule_fails() {
+        let tree = tree();
+        let taken = BTreeSet::from(["warp"]);
+        // The capability was revoked, but the host's record still says taken.
+        assert_eq!(
+            tree.status(&"warp", &BTreeSet::new(), &taken),
+            Some(NodeStatus::Unlocked)
+        );
     }
 
     #[test]
@@ -704,9 +831,10 @@ mod tests {
             "b",
             Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
         );
-        assert_eq!(tree.rank(&"a"), None);
-        assert_eq!(tree.rank(&"b"), None);
         assert!(tree.ranks().is_empty());
+        let view = tree.view(&BTreeSet::new(), &BTreeSet::new());
+        assert!(view.iter().all(|node| node.rank.is_none()));
+        assert!(view.iter().all(|node| node.status == NodeStatus::Locked));
     }
 
     #[test]
@@ -790,7 +918,7 @@ mod tests {
             Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Fusion]),
         );
         // It forms no cycle, because a node never depends on itself.
-        assert_eq!(tree.rank(&"bootstrap"), Some(0));
+        assert_eq!(rank(&tree, "bootstrap"), Some(0));
         assert!(
             tree.validate(&BTreeSet::new())
                 .contains(&UnlockWarning::Ungrantable {

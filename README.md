@@ -64,7 +64,7 @@ the arrow, so a rule and its graph can never drift apart.
 
 ```rust
 use std::collections::BTreeSet;
-use plotline::{Requirement, Unlock, Unlocks};
+use plotline::{NodeStatus, Requirement, Unlock, Unlocks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Cap {
@@ -79,16 +79,23 @@ tree.insert(
     Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
 );
 
-assert_eq!(tree.dependencies(&"warp-drive"), vec![&"fusion-power"]);
-assert_eq!(tree.rank(&"warp-drive"), Some(1));
-
 let mut held = BTreeSet::new();
+let mut taken = BTreeSet::new();
 tree.take(&"fusion-power", &mut held);
-assert!(tree.is_available(&"warp-drive", &held));
+taken.insert("fusion-power");
+
+for node in tree.view(&held, &taken) {
+    let mark = match node.status {
+        NodeStatus::Unlocked => '●',
+        NodeStatus::Available => '○',
+        NodeStatus::Locked => '·',
+    };
+    println!("{:?} {mark} {} after {:?}", node.rank, node.id, node.dependencies);
+}
 ```
 
-`rank` is the column a tree layout draws in. `validate` reports cycles and
-content nothing can reach.
+`view` gives each node's status, layout column, and edges in one call.
+`validate` reports cycles and content nothing can reach.
 
 ## Why
 
