@@ -8,75 +8,82 @@
 ![MSRV](https://img.shields.io/badge/rust-1.85%2B-blue)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-Capability requirements and unlock graphs as plain data, for any engine.
-`plotline` answers what gates authored content: does an entity hold what a
-thing demands, and if not, what is it short of?
+Authored sequences, the rules that gate them, and unlock trees, as plain
+data for any engine. Use it for dialog, quests, cutscenes, tutorials, and
+technology or ability trees.
+
+A step is a value. The runner walks the steps and hands each action to your
+code. Your code performs the action and answers, and the runner moves on.
 
 ## Quick start
 
 ```toml
 [dependencies]
-plotline = "0.3"
+plotline = "0.4"
 ```
-
-A requirement is a rule held as data, over capability keys you define. The
-crate never interprets a key. It answers whether a holder has one, and
-explains what failed. A plain `BTreeSet` is a holder, and so is any type
-that implements `Has`.
 
 ```rust
 use std::collections::BTreeSet;
-use plotline::Requirement;
+use plotline::{Answer, Library, Requirement, Runner, Status, Step};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Cap {
-    FrozenHabitation,
-    HighGravityHabitation,
-    Shipyard,
-    AlliedFleet,
+// Your vocabulary. The crate never interprets it.
+enum Action {
+    Say(&'static str),
+    Choose(Vec<&'static str>),
 }
 
-let humans = BTreeSet::from([Cap::FrozenHabitation, Cap::Shipyard]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    HasRing,
+}
 
-let deneb_iv = Requirement::all([
-    Requirement::has(Cap::FrozenHabitation),
-    Requirement::has(Cap::HighGravityHabitation),
-    Requirement::any([
-        Requirement::has(Cap::Shipyard),
-        Requirement::has(Cap::AlliedFleet),
-    ]),
+let mut library = Library::new();
+library.insert("hub", [
+    Step::act(Action::Say("Have you found my ring?")),
+    Step::when(Requirement::has(Key::HasRing), Step::goto("thanks")),
+    Step::act(Action::Choose(vec!["later", "hint"])),
 ]);
+library.insert("thanks", [Step::act(Action::Say("You have my thanks."))]);
+library.insert("later", [Step::act(Action::Say("Come back when you have."))]);
+library.insert("hint", [Step::act(Action::Say("Near the old well."))]);
 
-assert!(!deneb_iv.satisfies(&humans));
+let held = BTreeSet::new(); // The player has no ring yet.
+let mut runner = Runner::default();
+runner.start("hub").unwrap();
 
-let result = deneb_iv.evaluate(&humans);
-assert_eq!(result.missing(), vec![Cap::HighGravityHabitation]);
+let mut status = runner.advance(&library, &held);
+while let Status::Act(action) = status {
+    let answer = match action {
+        Action::Say(line) => {
+            println!("{line}");
+            Answer::Done
+        }
+        // The player picks the second reply.
+        Action::Choose(replies) => Answer::goto(replies[1]),
+    };
+    status = runner.resume(answer, &library, &held);
+}
+assert!(matches!(status, Status::Finished));
 ```
 
-Use it for technology prerequisites, equipment requirements, habitability,
-crafting recipes, policies, dialogue choices, and skill unlocks.
+A wait is the gap between `advance` and `resume`, so the crate needs no
+clock, callback, or async runtime.
 
 ## Trees
 
-`Unlocks` collects nodes that require capabilities and grant them. Nobody
-authors the edges. One node grants a key, another requires it, and that is
-the arrow, so a rule and its graph can never drift apart.
+`Unlocks` holds nodes that require keys and grant them. Nobody authors the
+edges. One node grants a key, another requires it, and that is the arrow,
+so a rule and its graph cannot drift apart.
 
 ```rust
 use std::collections::BTreeSet;
 use plotline::{NodeStatus, Requirement, Unlock, Unlocks};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Cap {
-    Fusion,
-    Warp,
-}
-
 let mut tree = Unlocks::new();
-tree.insert("fusion-power", Unlock::free().granting([Cap::Fusion]));
+tree.insert("fusion-power", Unlock::free().granting(["fusion"]));
 tree.insert(
     "warp-drive",
-    Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
+    Unlock::new(Requirement::has("fusion")).granting(["warp"]),
 );
 
 let mut held = BTreeSet::new();
@@ -95,30 +102,39 @@ for node in tree.view(&held, &taken) {
 ```
 
 `view` gives each node's status, layout column, and edges in one call.
-`validate` reports cycles and content nothing can reach.
+`validate` reports keys that nothing grants and nodes that nothing can
+reach.
 
 ## Why
 
-- **Rules you can read.** A `Requirement` clones, compares, prints, and
-  serializes. Tools can walk it without running it.
-- **Answers that explain themselves.** An `Evaluation` prints as a ✓/✗ tree
-  and lists the conservative shortfall.
-- **Graphs you do not maintain.** An unlock graph is derived from the rules
-  themselves, so it cannot disagree with them.
-- **No engine or runtime dependencies.** `no_std` with `alloc`.
+- **Plain data.** A script is a list of `Step` values. It prints, compares,
+  validates, and loads from JSON, RON, or YAML.
+- **Your loop, your code.** The runner never calls your code. Every effect
+  lives in one `match` in the host, so a test can check the actions a script
+  produces.
+- **One answer per key.** Stored and computed keys go through one `Has`
+  trait, so a dialog gate, a tooltip, and a tech tree always agree.
+- **Rules that explain themselves.** An `Evaluation` prints as a ✓/✗ tree
+  and lists what is missing.
+- **Small.** 19 public items, `no_std`, no required dependencies. Runaway
+  content aborts instead of hanging, and a runner saves in the middle of a
+  chain.
 
 ## Requirements and features
 
 - Rust 1.85 or later, edition 2024.
 - `no_std` with `alloc`; no required dependencies.
-- `serde` (off): derives `Serialize` and `Deserialize` for `Requirement`,
-  `Evaluation`, `Unlock`, and `Unlocks`. It works without `std`.
+- `serde` (off): derives `Serialize` and `Deserialize` for the data types,
+  including `Library` and `Runner`. Loading fails on an unknown field and on
+  a name that appears twice. It works without `std`.
 
 ## More examples and documentation
 
 - [API documentation](https://docs.rs/plotline) — rustdoc is the manual.
-- [`examples/unlocks.rs`](examples/unlocks.rs) — requirements gating what an
-  empire can do. Run it with `cargo run --example unlocks`.
+- [`examples/dialog.rs`](examples/dialog.rs) — a conversation with a choice,
+  an event, and a quest gate. Run it with `cargo run --example dialog`.
+- [`examples/unlocks.rs`](examples/unlocks.rs) — requirements that explain
+  themselves and gate a sequence. Run it with `cargo run --example unlocks`.
 - [`examples/techtree.rs`](examples/techtree.rs) — a technology tree drawn
   from derived edges. Run it with `cargo run --example techtree`.
 - [CHANGELOG](CHANGELOG.md)
