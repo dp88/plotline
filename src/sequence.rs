@@ -63,8 +63,8 @@ impl Display for SequenceRef {
 ///
 /// `A` is the host's action type: a line of dialog, a camera shake, a grant.
 /// The runner never interprets an action. It hands each one to the host and
-/// waits for the host's answer. `K` is the capability key type that the rules
-/// read through [`Has`](crate::Has).
+/// waits for the host's [`Answer`](crate::Answer). `K` is the capability key
+/// type that the rules read through [`Has`](crate::Has).
 ///
 /// Every other variant is control flow, and the runner handles it without
 /// the host.

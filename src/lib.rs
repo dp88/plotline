@@ -59,10 +59,12 @@
 extern crate alloc;
 
 mod rules;
+mod runner;
 mod sequence;
 mod unlocks;
 
 pub use rules::{Evaluation, Has, Requirement};
+pub use runner::{Abort, Answer, Busy, Limits, Runner, Status};
 pub use sequence::{Library, Problem, SequenceRef, Step, Warning};
 pub use unlocks::{NodeStatus, NodeView, Unlock, UnlockWarning, Unlocks};
 
