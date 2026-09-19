@@ -949,6 +949,32 @@ mod tests {
     }
 
     #[test]
+    fn a_node_behind_an_ungrantable_node_is_unreachable() {
+        let mut tree = Unlocks::new();
+        tree.insert(
+            "x",
+            Unlock::new(Requirement::has(Cap::Phantom)).granting([Cap::Cloaking]),
+        );
+        tree.insert(
+            "y",
+            Unlock::new(Requirement::has(Cap::Ghost)).granting([Cap::Phantom]),
+        );
+
+        // y is the cause, so only y names the missing key.
+        assert_eq!(
+            tree.validate(&BTreeSet::new()),
+            vec![
+                UnlockWarning::Unreachable { id: "x" },
+                UnlockWarning::Ungrantable {
+                    id: "y",
+                    capability: Cap::Ghost,
+                },
+            ]
+        );
+        assert_eq!(tree.validate(&BTreeSet::from([Cap::Ghost])), vec![]);
+    }
+
+    #[test]
     fn a_node_behind_a_cycle_is_unreachable_too() {
         let mut tree = Unlocks::new();
         tree.insert(

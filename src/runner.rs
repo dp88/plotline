@@ -905,15 +905,23 @@ mod tests {
         let saved = serde_json::to_string(&runner).unwrap();
         assert!(!saved.contains("call_depth"), "a save holds no limits");
 
-        // A newer build allows deeper calls than the build that saved.
-        let mut loaded: Runner = serde_json::from_str(&saved).unwrap();
-        loaded.set_limits(Limits {
-            call_depth: 3,
+        // The loaded runner has the default limits, not the saved ones.
+        let loaded: Runner = serde_json::from_str(&saved).unwrap();
+        let mut with_defaults = loaded.clone();
+        assert_eq!(
+            with_defaults.resume(Answer::Done, &library, &held),
+            Status::Act(&"deep")
+        );
+
+        // The host's own limits apply from the next step.
+        let mut with_host_limits = loaded;
+        with_host_limits.set_limits(Limits {
+            call_depth: 2,
             ..Limits::default()
         });
         assert_eq!(
-            loaded.resume(Answer::Done, &library, &held),
-            Status::Act(&"deep")
+            with_host_limits.resume(Answer::Done, &library, &held),
+            Status::Aborted(Abort::CallDepth)
         );
     }
 

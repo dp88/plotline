@@ -752,10 +752,15 @@ mod tests {
 
     #[test]
     fn required_and_optional_split_the_dependency_edges() {
+        // A sits in the choice too, but it is required, so it is not optional.
         let rule = Requirement::all([
             Requirement::has(A),
             Requirement::all([Requirement::has(B)]),
-            Requirement::any([Requirement::has(C), Requirement::has(D)]),
+            Requirement::any([
+                Requirement::has(A),
+                Requirement::has(C),
+                Requirement::has(D),
+            ]),
             Requirement::not(Requirement::has(D)),
         ]);
 

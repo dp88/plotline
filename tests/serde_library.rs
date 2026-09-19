@@ -101,8 +101,7 @@ fn a_repeated_sequence_name_is_an_error() {
 
 #[test]
 fn a_hand_written_library_runs() {
-    let library: Script =
-        serde_json::from_str(&serde_json::to_string(&ring_quest()).unwrap()).unwrap();
+    let library: Script = serde_json::from_str(HAND_WRITTEN).unwrap();
 
     let play = |held: &BTreeSet<Key>| {
         let mut runner = Runner::default();
