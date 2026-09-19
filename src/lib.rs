@@ -59,9 +59,11 @@
 extern crate alloc;
 
 mod rules;
+mod sequence;
 mod unlocks;
 
 pub use rules::{Evaluation, Has, Requirement};
+pub use sequence::{Library, Problem, SequenceRef, Step, Warning};
 pub use unlocks::{NodeStatus, NodeView, Unlock, UnlockWarning, Unlocks};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.
