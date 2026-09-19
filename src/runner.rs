@@ -21,7 +21,6 @@ use crate::sequence::{Library, SequenceRef, Step};
 /// let runner = Runner::new(limits);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct Limits {
     /// The most sequences a chain may stack through calls. The first
@@ -146,7 +145,10 @@ impl core::error::Error for Busy {}
 ///
 /// The runner holds only its limits and a stack of positions, so it clones,
 /// compares, and, with the `serde` feature, saves in the middle of a chain.
-/// A saved runner resumes against the same library it ran on.
+/// A save holds the positions and not the limits, which belong to the build
+/// that loads it: a loaded runner has the default limits until
+/// [`Runner::set_limits`]. A saved runner resumes against the same library
+/// it ran on.
 ///
 /// ```
 /// use std::collections::BTreeSet;
@@ -189,6 +191,7 @@ impl core::error::Error for Busy {}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Runner {
+    #[cfg_attr(feature = "serde", serde(skip))]
     limits: Limits,
     chain: Option<Chain>,
 }
@@ -201,6 +204,11 @@ impl Runner {
             limits,
             chain: None,
         }
+    }
+
+    /// Replaces the limits. A running chain uses them from its next step.
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
     }
 
     /// Starts a chain at the first step of `sequence`.
@@ -409,8 +417,9 @@ impl Chain {
 
     /// Moves the cursor. Returns why the chain ended, if it did.
     fn apply(&mut self, next: Move<'_>, limits: &Limits) -> Option<End> {
+        // A save file can hold any index, so a corrupt one must not overflow.
         match next {
-            Move::Next => self.current.index += 1,
+            Move::Next => self.current.index = self.current.index.saturating_add(1),
             Move::Call(target) => {
                 let depth = self.callers.len() + 1;
                 if depth >= limits.call_depth {
@@ -428,7 +437,7 @@ impl Chain {
             Move::Return => match self.callers.pop() {
                 Some(caller) => {
                     self.current = caller;
-                    self.current.index += 1;
+                    self.current.index = self.current.index.saturating_add(1);
                 }
                 None => return Some(End::Finished),
             },
@@ -678,6 +687,7 @@ mod tests {
 
         let mut runner = Runner::default();
         runner.start("main").unwrap();
+        assert_eq!(runner.waiting_on(&library), None, "nothing handed out yet");
         assert_eq!(runner.advance(&library, &held), Status::Act(&"ask"));
         assert_eq!(runner.advance(&library, &held), Status::Waiting);
         assert_eq!(runner.waiting_on(&library), Some(&"ask"));
@@ -842,6 +852,86 @@ mod tests {
         let abort = Abort::MissingSequence("absent".into());
         assert_eq!(abort.to_string(), "the library has no sequence 'absent'");
         assert_eq!(Busy.to_string(), "a chain is already running");
+    }
+
+    #[test]
+    fn an_answer_can_abort_the_chain() {
+        let mut library = Script::new();
+        library.insert("main", acts(&["ask"]));
+        let held = BTreeSet::new();
+
+        let mut runner = Runner::default();
+        runner.start("main").unwrap();
+        let _ = runner.advance(&library, &held);
+        assert_eq!(
+            runner.resume(Answer::call("absent"), &library, &held),
+            Status::Aborted(Abort::MissingSequence("absent".into()))
+        );
+
+        let mut runner = Runner::new(Limits {
+            call_depth: 1,
+            ..Limits::default()
+        });
+        runner.start("main").unwrap();
+        let _ = runner.advance(&library, &held);
+        assert_eq!(
+            runner.resume(Answer::call("main"), &library, &held),
+            Status::Aborted(Abort::CallDepth)
+        );
+        assert!(!runner.is_running());
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn a_loaded_runner_takes_the_hosts_limits() {
+        let mut library = Script::new();
+        library.insert("a", [Step::act("start"), Step::call("b")]);
+        library.insert("b", [Step::call("c")]);
+        library.insert("c", acts(&["deep"]));
+        let held = BTreeSet::new();
+
+        let mut runner = Runner::new(Limits {
+            call_depth: 2,
+            ..Limits::default()
+        });
+        runner.start("a").unwrap();
+        let _ = runner.advance(&library, &held);
+
+        let saved = serde_json::to_string(&runner).unwrap();
+        assert!(!saved.contains("call_depth"), "a save holds no limits");
+
+        // A newer build allows deeper calls than the build that saved.
+        let mut loaded: Runner = serde_json::from_str(&saved).unwrap();
+        loaded.set_limits(Limits {
+            call_depth: 3,
+            ..Limits::default()
+        });
+        assert_eq!(
+            loaded.resume(Answer::Done, &library, &held),
+            Status::Act(&"deep")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn a_corrupt_index_in_a_save_does_not_panic() {
+        let mut library = Script::new();
+        library.insert("main", acts(&["one", "two"]));
+        let held = BTreeSet::new();
+
+        let current = r#"{"sequence":"main","index":18446744073709551615}"#;
+        let waiting = format!(r#"{{"chain":{{"current":{current},"callers":[],"waiting":true}}}}"#);
+        let mut runner: Runner = serde_json::from_str(&waiting).unwrap();
+        assert_eq!(
+            runner.resume(Answer::Done, &library, &held),
+            Status::Finished
+        );
+
+        let calling = format!(
+            r#"{{"chain":{{"current":{{"sequence":"main","index":5}},"callers":[{current}],"waiting":false}}}}"#
+        );
+        let mut runner: Runner = serde_json::from_str(&calling).unwrap();
+        assert_eq!(runner.advance(&library, &held), Status::Finished);
     }
 
     #[test]
