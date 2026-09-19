@@ -88,6 +88,7 @@ impl Display for SequenceRef {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Step<A, K> {
     /// Hands an action to the host and waits for its answer.
     Act(A),
@@ -170,7 +171,8 @@ impl<A, K> Step<A, K> {
 /// Named sequences of steps.
 ///
 /// A library is plain data. With the `serde` feature it loads from a file as
-/// a map from each sequence name to its list of steps.
+/// a map from each sequence name to its list of steps. Loading fails when a
+/// name appears twice, or when a step holds a field it does not know.
 ///
 /// ```
 /// use plotline::{Library, Step};
@@ -185,7 +187,15 @@ impl<A, K> Step<A, K> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(deserialize = "A: serde::Deserialize<'de>, K: serde::Deserialize<'de>"))
+)]
 pub struct Library<A, K> {
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::unique_map::deserialize")
+    )]
     sequences: BTreeMap<SequenceRef, Vec<Step<A, K>>>,
 }
 

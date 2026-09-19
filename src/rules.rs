@@ -97,6 +97,7 @@ impl<K: Ord> Has<K> for BTreeSet<K> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Requirement<K> {
     /// The holder has this key.
     Has(K),

@@ -151,3 +151,22 @@ fn a_hand_written_tree_loads() {
     assert!(tree.take(&"warp-drive".to_owned(), &mut held));
     assert_eq!(held, BTreeSet::from([Tech::Fusion, Tech::Warp]));
 }
+
+#[test]
+fn a_repeated_node_id_is_an_error() {
+    let document = r#"
+    {
+      "warp-drive": { "requires": { "All": [] }, "grants": ["Warp"] },
+      "warp-drive": { "requires": { "All": [] }, "grants": [] }
+    }
+    "#;
+    let error = serde_json::from_str::<Unlocks<String, Tech>>(document).unwrap_err();
+    assert!(error.to_string().contains("twice"), "{error}");
+}
+
+#[test]
+fn a_misspelled_node_field_is_an_error() {
+    let document =
+        r#"{ "warp-drive": { "requires": { "All": [] }, "grants": [], "grant": ["Warp"] } }"#;
+    assert!(serde_json::from_str::<Unlocks<String, Tech>>(document).is_err());
+}

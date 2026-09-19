@@ -78,3 +78,21 @@ fn a_hand_written_library_loads() {
     let library: Script = serde_json::from_str(document).unwrap();
     assert_eq!(library, ring_quest());
 }
+
+#[test]
+fn a_misspelled_field_is_an_error() {
+    // Without the check, the misspelled target loads as None and the chain ends.
+    let document = r#"
+    { "hub": [{ "Branch": { "rule": { "All": [] }, "if_ture": "hub", "if_false": null } }] }
+    "#;
+    let error = serde_json::from_str::<Script>(document).unwrap_err();
+    assert!(error.to_string().contains("if_ture"), "{error}");
+}
+
+#[test]
+fn a_repeated_sequence_name_is_an_error() {
+    // Without the check, the second "hub" replaces the first without a word.
+    let document = r#"{ "hub": ["Return"], "hub": [{ "Goto": null }] }"#;
+    let error = serde_json::from_str::<Script>(document).unwrap_err();
+    assert!(error.to_string().contains("twice"), "{error}");
+}

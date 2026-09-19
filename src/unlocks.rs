@@ -28,10 +28,13 @@ use crate::rules::{Evaluation, Has, Requirement};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "serde",
-    serde(bound(
-        serialize = "K: serde::Serialize",
-        deserialize = "K: Ord + serde::Deserialize<'de>"
-    ))
+    serde(
+        deny_unknown_fields,
+        bound(
+            serialize = "K: serde::Serialize",
+            deserialize = "K: Ord + serde::Deserialize<'de>"
+        )
+    )
 )]
 pub struct Unlock<K> {
     /// What the entity must hold before it can take this node.
@@ -178,6 +181,10 @@ pub struct NodeView<'a, I> {
     ))
 )]
 pub struct Unlocks<I, K> {
+    #[cfg_attr(
+        feature = "serde",
+        serde(deserialize_with = "crate::unique_map::deserialize")
+    )]
     nodes: BTreeMap<I, Unlock<K>>,
 }
 

@@ -61,6 +61,8 @@ extern crate alloc;
 mod rules;
 mod runner;
 mod sequence;
+#[cfg(feature = "serde")]
+mod unique_map;
 mod unlocks;
 
 pub use rules::{Evaluation, Has, Requirement};
