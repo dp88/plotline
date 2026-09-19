@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use crate::rules::{CapabilitySet, Evaluation, Requirement};
+use crate::rules::{CapabilitySet, Evaluation, Has, Requirement};
 
 /// One node: what it demands, and what it gives.
 ///
@@ -200,16 +200,19 @@ impl<I: Ord, K: Ord> Unlocks<I, K> {
     /// two nodes may grant the same capability. Keep that record in the host
     /// and overlay it on this answer.
     #[must_use]
-    pub fn is_available(&self, id: &I, held: &CapabilitySet<K>) -> bool {
+    pub fn is_available(&self, id: &I, holder: &(impl Has<K> + ?Sized)) -> bool {
         self.get(id)
-            .is_some_and(|node| node.requires.satisfies(held))
+            .is_some_and(|node| node.requires.satisfies(holder))
     }
 
     /// Iterates over the nodes that can be taken now.
-    pub fn available<'a>(&'a self, held: &'a CapabilitySet<K>) -> impl Iterator<Item = &'a I> + 'a {
+    pub fn available<'a, H: Has<K> + ?Sized>(
+        &'a self,
+        holder: &'a H,
+    ) -> impl Iterator<Item = &'a I> + 'a {
         self.nodes
             .iter()
-            .filter(move |(_, node)| node.requires.satisfies(held))
+            .filter(move |(_, node)| node.requires.satisfies(holder))
             .map(|(id, _)| id)
     }
 
@@ -223,20 +226,25 @@ impl<I: Ord, K: Ord> Unlocks<I, K> {
             .collect()
     }
 
-    /// Adds a node's grants to the set when the node is available.
+    /// Adds a node's grants to the holder when the node is available.
     ///
     /// Returns whether it applied. Taking a node twice is harmless.
-    pub fn take(&self, id: &I, held: &mut CapabilitySet<K>) -> bool
+    ///
+    /// The holder both answers the requirement and receives the grants. A
+    /// set does both. A host type that computes some keys implements
+    /// [`Extend`] to store the grants where its [`Has`] reads them.
+    pub fn take<H>(&self, id: &I, holder: &mut H) -> bool
     where
+        H: Has<K> + Extend<K>,
         K: Clone,
     {
         let Some(node) = self.get(id) else {
             return false;
         };
-        if !node.requires.satisfies(held) {
+        if !node.requires.satisfies(holder) {
             return false;
         }
-        held.extend(node.grants.iter().cloned());
+        holder.extend(node.grants.iter().cloned());
         true
     }
 }
@@ -244,8 +252,8 @@ impl<I: Ord, K: Ord> Unlocks<I, K> {
 impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
     /// Explains why a node is available or locked, or `None` when it is missing.
     #[must_use]
-    pub fn evaluate(&self, id: &I, held: &CapabilitySet<K>) -> Option<Evaluation<K>> {
-        self.get(id).map(|node| node.requires.evaluate(held))
+    pub fn evaluate(&self, id: &I, holder: &(impl Has<K> + ?Sized)) -> Option<Evaluation<K>> {
+        self.get(id).map(|node| node.requires.evaluate(holder))
     }
 
     /// Returns the capabilities a node still needs, or `None` when it is missing.
@@ -256,8 +264,8 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
     /// Filter on the length to build a frontier. A node with exactly one
     /// missing capability is one step away.
     #[must_use]
-    pub fn missing(&self, id: &I, held: &CapabilitySet<K>) -> Option<Vec<K>> {
-        self.evaluate(id, held).map(|result| result.missing())
+    pub fn missing(&self, id: &I, holder: &(impl Has<K> + ?Sized)) -> Option<Vec<K>> {
+        self.evaluate(id, holder).map(|result| result.missing())
     }
 
     /// Returns the nodes that must be taken before this one.
@@ -366,7 +374,7 @@ impl<I: Ord + Clone, K: Ord + Clone> Unlocks<I, K> {
     /// species trait or a starting bonus. Without it, every requirement that
     /// no node satisfies looks like dead content.
     #[must_use]
-    pub fn validate(&self, external: &CapabilitySet<K>) -> Vec<UnlockWarning<I, K>> {
+    pub fn validate(&self, external: &(impl Has<K> + ?Sized)) -> Vec<UnlockWarning<I, K>> {
         let mut warnings = Vec::new();
         let ranks = self.ranks();
 
@@ -378,7 +386,7 @@ impl<I: Ord + Clone, K: Ord + Clone> Unlocks<I, K> {
                     .providers(key)
                     .into_iter()
                     .any(|provider| provider != id);
-                if !external.contains(key) && !elsewhere {
+                if !external.has(key) && !elsewhere {
                     warnings.push(UnlockWarning::Ungrantable {
                         id: id.clone(),
                         capability: key.clone(),
@@ -546,6 +554,65 @@ mod tests {
         assert!(tree.take(&"warp", &mut held), "taking twice is harmless");
         assert_eq!(held.len(), 2);
         assert!(!tree.take(&"absent", &mut held));
+    }
+
+    /// A host that stores researched keys and computes Shields from its fleet.
+    struct Empire {
+        researched: BTreeSet<Cap>,
+        warships: u32,
+    }
+
+    impl Has<Cap> for Empire {
+        fn has(&self, key: &Cap) -> bool {
+            match key {
+                Cap::Shields => self.warships >= 3,
+                stored => self.researched.contains(stored),
+            }
+        }
+    }
+
+    impl Extend<Cap> for Empire {
+        fn extend<T: IntoIterator<Item = Cap>>(&mut self, keys: T) {
+            self.researched.extend(keys);
+        }
+    }
+
+    #[test]
+    fn a_node_behind_a_computed_key_unlocks() {
+        let mut tree = Unlocks::new();
+        tree.insert(
+            "fleet-doctrine",
+            Unlock::new(Requirement::all([
+                Requirement::has(Cap::Fusion),
+                Requirement::has(Cap::Shields),
+            ]))
+            .granting([Cap::Cloaking]),
+        );
+        let mut empire = Empire {
+            researched: BTreeSet::from([Cap::Fusion]),
+            warships: 1,
+        };
+
+        assert!(!tree.is_available(&"fleet-doctrine", &empire));
+        assert_eq!(
+            tree.missing(&"fleet-doctrine", &empire),
+            Some(vec![Cap::Shields])
+        );
+
+        empire.warships = 3;
+        assert!(tree.is_available(&"fleet-doctrine", &empire));
+        assert!(tree.take(&"fleet-doctrine", &mut empire));
+        assert!(empire.researched.contains(&Cap::Cloaking));
+
+        // Shields comes from outside the tree, so validation accepts the node.
+        let warnings = tree.validate(&empire);
+        assert!(!warnings.iter().any(|warning| matches!(
+            warning,
+            UnlockWarning::Ungrantable {
+                capability: Cap::Shields,
+                ..
+            }
+        )));
     }
 
     #[test]

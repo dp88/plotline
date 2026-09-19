@@ -11,9 +11,10 @@
 //!
 //! # The pieces
 //!
-//! [`Requirement`] holds a boolean rule as data. [`CapabilitySet`] holds what
-//! an entity has. [`Unlocks`] joins many of them into a graph. Together they
-//! cover prerequisites, technology trees, permissions, and habitability.
+//! [`Requirement`] holds a boolean rule as data. [`Has`] answers whether an
+//! entity holds a key, and [`CapabilitySet`] is the plain set that does so.
+//! [`Unlocks`] joins many rules into a graph. Together they cover
+//! prerequisites, technology trees, permissions, and habitability.
 //!
 //! # Requirements
 //!
@@ -22,9 +23,13 @@
 //! bool and allocates nothing; [`Requirement::evaluate`] returns an
 //! [`Evaluation`] tree that explains the answer, including the conservative
 //! [`Evaluation::missing`] list. Both are pure functions of the requirement
-//! and the [`CapabilitySet`], so they suit a user interface, a planner, or a
-//! test. [`Requirement::warning`] reports rules that are legal but almost
-//! certainly a mistake.
+//! and the holder, so they suit a user interface, a planner, or a test.
+//! [`Requirement::warning`] reports rules that are legal but almost certainly
+//! a mistake.
+//!
+//! A host type can implement [`Has`] itself. It then answers some keys from
+//! stored state and computes others, such as "gold is at least 500". Every
+//! rule, graph query, and evaluation tree sees the same answer for a key.
 //!
 //! # Unlock graphs
 //!
@@ -55,7 +60,7 @@ extern crate alloc;
 mod rules;
 mod unlocks;
 
-pub use rules::{CapabilitySet, Evaluation, Requirement};
+pub use rules::{CapabilitySet, Evaluation, Has, Requirement};
 pub use unlocks::{Unlock, UnlockWarning, Unlocks};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.

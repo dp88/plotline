@@ -8,6 +8,59 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Display, Formatter, Result as FmtResult};
 
+/// Answers whether an entity holds a capability.
+///
+/// Every rule reads capabilities through this trait. The crate implements it
+/// for [`BTreeSet`] and [`CapabilitySet`]. A host type can implement it too,
+/// and its answer can mix stored keys with keys it computes from other state,
+/// such as a level or an item count. Each key then has one answer, whoever
+/// asks.
+///
+/// ```
+/// use std::collections::BTreeSet;
+/// use plotline::{Has, Requirement};
+///
+/// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// enum Key {
+///     Fusion,
+///     RichTreasury,
+/// }
+///
+/// struct Empire {
+///     researched: BTreeSet<Key>,
+///     gold: u32,
+/// }
+///
+/// impl Has<Key> for Empire {
+///     fn has(&self, key: &Key) -> bool {
+///         match key {
+///             Key::RichTreasury => self.gold >= 500,
+///             stored => self.researched.contains(stored),
+///         }
+///     }
+/// }
+///
+/// let empire = Empire { researched: BTreeSet::from([Key::Fusion]), gold: 800 };
+/// let rule = Requirement::all([Requirement::has(Key::Fusion), Requirement::has(Key::RichTreasury)]);
+/// assert!(rule.satisfies(&empire));
+/// ```
+pub trait Has<K> {
+    /// Returns whether the entity holds this key.
+    fn has(&self, key: &K) -> bool;
+}
+
+impl<K: Ord> Has<K> for BTreeSet<K> {
+    fn has(&self, key: &K) -> bool {
+        self.contains(key)
+    }
+}
+
+impl<K: Ord> Has<K> for CapabilitySet<K> {
+    fn has(&self, key: &K) -> bool {
+        self.contains(key)
+    }
+}
+
 /// The capabilities one entity holds.
 ///
 /// The crate never interprets a key. The host chooses the type and its
@@ -135,8 +188,8 @@ impl<K> IntoIterator for CapabilitySet<K> {
 
 /// A requirement over capability keys, held as data.
 ///
-/// The crate never interprets a key. It only asks whether a
-/// [`CapabilitySet`] holds one. A requirement is plain data, so the host can
+/// The crate never interprets a key. It only asks a [`Has`] holder whether it
+/// holds one. A requirement is plain data, so the host can
 /// clone it, compare it, print it, store it in a file, and read its structure
 /// without running it.
 ///
@@ -175,7 +228,7 @@ impl<K> IntoIterator for CapabilitySet<K> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Requirement<K> {
-    /// The capability set holds this key.
+    /// The holder has this key.
     Has(K),
     /// Every requirement holds. An empty list holds.
     All(Vec<Requirement<K>>),
@@ -341,24 +394,26 @@ impl<K: Ord + Clone> Requirement<K> {
     }
 }
 
-impl<K: Ord> Requirement<K> {
-    /// Returns whether the capability set satisfies this requirement.
+impl<K> Requirement<K> {
+    /// Returns whether the holder satisfies this requirement.
     ///
     /// This call allocates nothing and stops at the first decisive child.
+    /// It always agrees with [`Evaluation::satisfied`] from
+    /// [`Requirement::evaluate`].
     #[must_use]
-    pub fn satisfies(&self, capabilities: &CapabilitySet<K>) -> bool {
+    pub fn satisfies(&self, holder: &(impl Has<K> + ?Sized)) -> bool {
         match self {
-            Self::Has(key) => capabilities.contains(key),
-            Self::All(items) => items.iter().all(|item| item.satisfies(capabilities)),
-            Self::Any(items) => items.iter().any(|item| item.satisfies(capabilities)),
-            Self::Not(inner) => !inner.satisfies(capabilities),
+            Self::Has(key) => holder.has(key),
+            Self::All(items) => items.iter().all(|item| item.satisfies(holder)),
+            Self::Any(items) => items.iter().any(|item| item.satisfies(holder)),
+            Self::Not(inner) => !inner.satisfies(holder),
             Self::AtLeast {
                 count,
                 requirements,
             } => {
                 requirements
                     .iter()
-                    .filter(|item| item.satisfies(capabilities))
+                    .filter(|item| item.satisfies(holder))
                     .count()
                     >= *count
             }
@@ -367,31 +422,31 @@ impl<K: Ord> Requirement<K> {
 
     /// Evaluates the requirement and returns the full result tree.
     #[must_use]
-    pub fn evaluate(&self, capabilities: &CapabilitySet<K>) -> Evaluation<K>
+    pub fn evaluate(&self, holder: &(impl Has<K> + ?Sized)) -> Evaluation<K>
     where
         K: Clone,
     {
         match self {
             Self::Has(key) => Evaluation::Has {
                 key: key.clone(),
-                satisfied: capabilities.contains(key),
+                satisfied: holder.has(key),
             },
             Self::All(items) => {
-                let children = Self::evaluate_each(items, capabilities);
+                let children = Self::evaluate_each(items, holder);
                 Evaluation::All {
                     satisfied: children.iter().all(Evaluation::satisfied),
                     children,
                 }
             }
             Self::Any(items) => {
-                let children = Self::evaluate_each(items, capabilities);
+                let children = Self::evaluate_each(items, holder);
                 Evaluation::Any {
                     satisfied: children.iter().any(Evaluation::satisfied),
                     children,
                 }
             }
             Self::Not(inner) => {
-                let child = inner.evaluate(capabilities);
+                let child = inner.evaluate(holder);
                 Evaluation::Not {
                     satisfied: !child.satisfied(),
                     child: Box::new(child),
@@ -401,7 +456,7 @@ impl<K: Ord> Requirement<K> {
                 count,
                 requirements,
             } => {
-                let children = Self::evaluate_each(requirements, capabilities);
+                let children = Self::evaluate_each(requirements, holder);
                 let met = children.iter().filter(|c| c.satisfied()).count();
                 Evaluation::AtLeast {
                     count: *count,
@@ -413,14 +468,11 @@ impl<K: Ord> Requirement<K> {
         }
     }
 
-    fn evaluate_each(items: &[Self], capabilities: &CapabilitySet<K>) -> Vec<Evaluation<K>>
+    fn evaluate_each(items: &[Self], holder: &(impl Has<K> + ?Sized)) -> Vec<Evaluation<K>>
     where
         K: Clone,
     {
-        items
-            .iter()
-            .map(|item| item.evaluate(capabilities))
-            .collect()
+        items.iter().map(|item| item.evaluate(holder)).collect()
     }
 }
 
@@ -459,7 +511,7 @@ pub enum Evaluation<K> {
     Has {
         /// The capability that was looked up.
         key: K,
-        /// Whether the set holds it.
+        /// Whether the holder has it.
         satisfied: bool,
     },
     /// Every child must hold. An empty child list holds.
@@ -744,6 +796,42 @@ mod tests {
                 "tree disagrees with bool: {rule:?}"
             );
         }
+    }
+
+    /// A host type that stores some keys and computes others.
+    struct World {
+        stored: BTreeSet<Tech>,
+        level: u32,
+    }
+
+    impl Has<Tech> for World {
+        fn has(&self, key: &Tech) -> bool {
+            match key {
+                D => self.level >= 5,
+                stored => self.stored.contains(stored),
+            }
+        }
+    }
+
+    #[test]
+    fn a_computed_key_gets_one_answer_everywhere() {
+        let rule = Requirement::all([Requirement::has(A), Requirement::has(D)]);
+        let novice = World {
+            stored: BTreeSet::from([A]),
+            level: 1,
+        };
+        let veteran = World {
+            stored: BTreeSet::from([A]),
+            level: 5,
+        };
+
+        assert!(!rule.satisfies(&novice));
+        assert_eq!(rule.evaluate(&novice).missing(), vec![D]);
+        assert!(rule.satisfies(&veteran));
+        assert!(rule.evaluate(&veteran).satisfied());
+
+        let erased: &dyn Has<Tech> = &veteran;
+        assert!(rule.satisfies(erased));
     }
 
     #[test]
