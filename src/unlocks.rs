@@ -68,20 +68,21 @@ impl<K: Ord> Unlock<K> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UnlockWarning<I, K> {
-    /// The node requires a capability that nothing else grants.
+    /// The node requires a capability that nothing else grants, so nothing
+    /// can ever take it.
     ///
-    /// A node that requires only what it grants itself reports here too. It
-    /// is unreachable, but it forms no cycle, because a node never depends on
-    /// itself.
+    /// A node that requires only what it grants itself reports here too,
+    /// because a node never depends on itself.
     Ungrantable {
         /// The node that cannot be reached.
         id: I,
         /// The capability with no other source.
         capability: K,
     },
-    /// The node sits on a dependency cycle, so nothing can ever take it.
-    Cycle {
-        /// The node on the cycle.
+    /// No order of takes reaches the node. Every source of a key it requires
+    /// sits on a dependency cycle, or behind a node that nothing can take.
+    Unreachable {
+        /// The node that cannot be reached.
         id: I,
     },
     /// The node grants nothing, so no other node can depend on it.
@@ -117,8 +118,8 @@ pub struct NodeView<'a, I> {
     pub id: &'a I,
     /// Where the node stands.
     pub status: NodeStatus,
-    /// The layout column, or `None` for a node on a dependency cycle. See
-    /// [`Unlocks::ranks`].
+    /// The layout column, or `None` when no order of takes reaches the node.
+    /// See [`Unlocks::ranks`].
     pub rank: Option<usize>,
     /// The nodes that must come first. Draw these as solid edges. See
     /// [`Unlocks::dependencies`].
@@ -306,89 +307,123 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
 
     /// Returns the nodes that must be taken before this one.
     ///
-    /// These are the providers of every capability the requirement demands
-    /// outright. A node never depends on itself.
+    /// A node is a dependency when it is the only other source of a key that
+    /// the requirement demands outright. When several nodes grant that key,
+    /// any one of them unlocks it, so they are optional dependencies instead.
+    /// A node never depends on itself.
     #[must_use]
     pub fn dependencies(&self, id: &I) -> Vec<&I> {
-        self.edges(id, Requirement::required)
+        self.edges(id).0
     }
 
     /// Returns the nodes that could help unlock this one without being required.
     ///
-    /// These are the providers of the capabilities inside a choice. Draw them
-    /// differently from [`Unlocks::dependencies`].
+    /// These are the sources of the keys inside a choice, and the sources of
+    /// a required key that more than one node grants. A node that
+    /// [`Unlocks::dependencies`] returns is left out. Draw them differently.
     #[must_use]
     pub fn optional_dependencies(&self, id: &I) -> Vec<&I> {
-        self.edges(id, Requirement::optional)
+        self.edges(id).1
     }
 
-    fn edges(&self, id: &I, keys_of: fn(&Requirement<K>) -> BTreeSet<K>) -> Vec<&I> {
+    /// Returns the solid and the dashed edges into one node.
+    fn edges(&self, id: &I) -> (Vec<&I>, Vec<&I>) {
         let Some(node) = self.get(id) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
-        let mut found = BTreeSet::new();
-        for key in &keys_of(&node.requires) {
-            for provider in self.providers(key) {
-                if provider != id {
-                    found.insert(provider);
+        let (required, optional) = node.requires.edges();
+        let mut solid = BTreeSet::new();
+        let mut dashed = BTreeSet::new();
+        for key in &required {
+            match self.sources(key, id).as_slice() {
+                [only] => {
+                    solid.insert(*only);
                 }
+                several => dashed.extend(several),
             }
         }
-        found.into_iter().collect()
+        for key in &optional {
+            dashed.extend(self.sources(key, id));
+        }
+        dashed.retain(|source| !solid.contains(source));
+        (solid.into_iter().collect(), dashed.into_iter().collect())
+    }
+
+    /// Returns every node except `id` that grants `key`.
+    fn sources(&self, key: &K, id: &I) -> Vec<&I> {
+        self.providers(key)
+            .into_iter()
+            .filter(|provider| *provider != id)
+            .collect()
     }
 
     /// Returns the rank of every node that has one.
     ///
-    /// A rank counts how deep a node sits along its required dependencies. A
-    /// node with no required dependency ranks 0. Use it as the column index in
-    /// a tree layout. A node on a dependency cycle has no rank, so it is left
-    /// out. [`Unlocks::validate`] reports those.
+    /// A rank is the earliest round in which the entity can take a node, if
+    /// it takes every node it can in each round. Only required keys count,
+    /// and a key that no other node grants counts as held from the start.
+    /// So a node ranks 0 when no other node grants a key it requires.
+    /// Otherwise, for each required key, take the lowest rank among the
+    /// nodes that grant it. The node ranks one more than the highest of
+    /// those.
+    ///
+    /// Use it as the column index in a tree layout. Every edge that
+    /// [`Unlocks::dependencies`] returns points to a higher rank. A node that
+    /// no order of takes reaches has no rank, so it is left out.
+    /// [`Unlocks::validate`] reports those.
     #[must_use]
     pub fn ranks(&self) -> BTreeMap<I, usize>
     where
         I: Clone,
     {
-        let mut done = BTreeMap::new();
-        for id in self.nodes.keys() {
-            let mut visiting = BTreeSet::new();
-            self.rank_of(id, &mut done, &mut visiting);
-        }
-        done.into_iter()
-            .filter_map(|(id, rank)| rank.map(|rank| (id, rank)))
+        self.rounds(|_, has_other_source| !has_other_source)
+            .into_iter()
+            .map(|(id, rank)| (id.clone(), rank))
             .collect()
     }
 
-    fn rank_of(
-        &self,
-        id: &I,
-        done: &mut BTreeMap<I, Option<usize>>,
-        visiting: &mut BTreeSet<I>,
-    ) -> Option<usize>
-    where
-        I: Clone,
-    {
-        if let Some(known) = done.get(id) {
-            return *known;
-        }
-        if !visiting.insert(id.clone()) {
-            return None; // a cycle; the caller records it as unrankable
-        }
-
-        let mut rank = Some(0);
-        for parent in self.dependencies(id) {
-            match self.rank_of(parent, done, visiting) {
-                Some(parent_rank) => {
-                    if let Some(current) = rank {
-                        rank = Some(current.max(parent_rank + 1));
-                    }
-                }
-                None => rank = None,
+    /// Returns the round in which each reachable node can first be taken.
+    ///
+    /// `held_from_start` says whether a node has a key before any take. It
+    /// receives the key and whether another node grants it. Every other
+    /// required key must come from a node of an earlier round.
+    fn rounds(&self, held_from_start: impl Fn(&K, bool) -> bool) -> BTreeMap<&I, usize> {
+        let mut sources: BTreeMap<&K, Vec<&I>> = BTreeMap::new();
+        for (id, node) in &self.nodes {
+            for key in &node.grants {
+                sources.entry(key).or_default().push(id);
             }
         }
+        let required: Vec<(&I, BTreeSet<K>)> = self
+            .nodes
+            .iter()
+            .map(|(id, node)| (id, node.requires.required()))
+            .collect();
 
-        visiting.remove(id);
-        done.insert(id.clone(), rank);
-        rank
+        let mut reached: BTreeMap<&I, usize> = BTreeMap::new();
+        for round in 0..=required.len() {
+            let key_is_ready = |id: &I, key: &K| {
+                let others = sources.get(key).map_or(&[][..], Vec::as_slice);
+                let has_other_source = others.iter().any(|node| *node != id);
+                held_from_start(key, has_other_source)
+                    || others
+                        .iter()
+                        .any(|node| *node != id && reached.contains_key(node))
+            };
+            let newly: Vec<&I> = required
+                .iter()
+                .filter(|(id, _)| !reached.contains_key(id))
+                .filter(|(id, keys)| keys.iter().all(|key| key_is_ready(id, key)))
+                .map(|(id, _)| *id)
+                .collect();
+            if newly.is_empty() {
+                break;
+            }
+            for id in newly {
+                reached.insert(id, round);
+            }
+        }
+        reached
     }
 
     /// Returns everything a tree view draws, one entry per node, in id order.
@@ -462,27 +497,26 @@ impl<I: Ord + Clone, K: Ord + Clone> Unlocks<I, K> {
     /// no node satisfies looks like dead content.
     #[must_use]
     pub fn validate(&self, external: &(impl Has<K> + ?Sized)) -> Vec<UnlockWarning<I, K>> {
+        let reached = self.rounds(|key, _| external.has(key));
         let mut warnings = Vec::new();
-        let ranks = self.ranks();
 
         for (id, node) in &self.nodes {
-            for key in &node.requires.required() {
-                // A node never depends on itself, so a key it alone grants
-                // leaves it unreachable without forming a cycle.
-                let elsewhere = self
-                    .providers(key)
+            if !reached.contains_key(id) {
+                let ungrantable: Vec<K> = node
+                    .requires
+                    .required()
                     .into_iter()
-                    .any(|provider| provider != id);
-                if !external.has(key) && !elsewhere {
+                    .filter(|key| !external.has(key) && self.sources(key, id).is_empty())
+                    .collect();
+                if ungrantable.is_empty() {
+                    warnings.push(UnlockWarning::Unreachable { id: id.clone() });
+                }
+                for capability in ungrantable {
                     warnings.push(UnlockWarning::Ungrantable {
                         id: id.clone(),
-                        capability: key.clone(),
+                        capability,
                     });
                 }
-            }
-
-            if !ranks.contains_key(id) {
-                warnings.push(UnlockWarning::Cycle { id: id.clone() });
             }
 
             if node.grants.is_empty() {
@@ -514,7 +548,7 @@ where
                     "{id:?} requires {capability:?}, which nothing else grants"
                 )
             }
-            Self::Cycle { id } => write!(f, "{id:?} sits on a dependency cycle"),
+            Self::Unreachable { id } => write!(f, "{id:?} cannot be reached by any order of takes"),
             Self::GrantsNothing { id } => write!(f, "{id:?} grants nothing"),
             Self::Requirement { id, message } => write!(f, "{id:?} requirement: {message}"),
         }
@@ -534,6 +568,8 @@ mod tests {
         Antimatter,
         Cloaking,
         Shields,
+        Ghost,
+        Phantom,
     }
 
     /// fusion ─┬─▶ warp ──▶ cloaking
@@ -608,11 +644,56 @@ mod tests {
         let mut tree = tree();
         tree.insert("salvaged-warp", Unlock::free().granting([Cap::Warp]));
         assert_eq!(tree.providers(&Cap::Warp), vec![&"salvaged-warp", &"warp"]);
+
+        // Either source unlocks cloaking, so neither is a hard dependency.
+        assert!(tree.dependencies(&"cloaking").is_empty());
         assert_eq!(
-            tree.dependencies(&"cloaking"),
-            vec![&"salvaged-warp", &"warp"],
-            "either source unlocks it"
+            tree.optional_dependencies(&"cloaking"),
+            vec![&"salvaged-warp", &"warp"]
         );
+        // The free source reaches cloaking one round sooner.
+        assert_eq!(rank(&tree, "cloaking"), Some(1));
+    }
+
+    #[test]
+    fn a_second_source_of_a_key_makes_no_false_cycle() {
+        // fusion-upgrade grants Fusion again, from further down the tree.
+        let mut tree = Unlocks::new();
+        tree.insert("fusion", Unlock::free().granting([Cap::Fusion]));
+        tree.insert(
+            "warp",
+            Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
+        );
+        tree.insert(
+            "cloaking",
+            Unlock::new(Requirement::has(Cap::Warp)).granting([Cap::Cloaking]),
+        );
+        tree.insert(
+            "fusion-upgrade",
+            Unlock::new(Requirement::has(Cap::Warp)).granting([Cap::Fusion]),
+        );
+
+        assert_eq!(tree.validate(&BTreeSet::new()), vec![]);
+        assert_eq!(tree.ranks().len(), 4);
+        assert_eq!(rank(&tree, "cloaking"), Some(2));
+        assert_eq!(rank(&tree, "fusion-upgrade"), Some(2));
+    }
+
+    #[test]
+    fn a_provider_is_never_both_a_solid_and_a_dashed_edge() {
+        let mut tree = Unlocks::new();
+        tree.insert("core", Unlock::free().granting([Cap::Fusion, Cap::Warp]));
+        tree.insert("ghost-drive", Unlock::free().granting([Cap::Ghost]));
+        tree.insert(
+            "cruiser",
+            Unlock::new(Requirement::all([
+                Requirement::has(Cap::Fusion),
+                Requirement::any([Requirement::has(Cap::Warp), Requirement::has(Cap::Ghost)]),
+            ]))
+            .granting([Cap::Shields]),
+        );
+        assert_eq!(tree.dependencies(&"cruiser"), vec![&"core"]);
+        assert_eq!(tree.optional_dependencies(&"cruiser"), vec![&"ghost-drive"]);
     }
 
     #[test]
@@ -842,11 +923,42 @@ mod tests {
         let mut tree = tree();
         tree.insert(
             "loop-a",
-            Unlock::new(Requirement::has(Cap::Shields)).granting([Cap::Shields]),
+            Unlock::new(Requirement::has(Cap::Ghost)).granting([Cap::Phantom]),
+        );
+        tree.insert(
+            "loop-b",
+            Unlock::new(Requirement::has(Cap::Phantom)).granting([Cap::Ghost]),
         );
         let ranks = tree.ranks();
         assert_eq!(ranks.get("fusion"), Some(&0));
         assert_eq!(ranks.get("cloaking"), Some(&2));
+        assert_eq!(ranks.get("loop-a"), None);
+        assert_eq!(ranks.len(), tree.len() - 2);
+    }
+
+    #[test]
+    fn a_node_behind_a_cycle_is_unreachable_too() {
+        let mut tree = Unlocks::new();
+        tree.insert(
+            "a",
+            Unlock::new(Requirement::has(Cap::Ghost)).granting([Cap::Phantom]),
+        );
+        tree.insert(
+            "b",
+            Unlock::new(Requirement::has(Cap::Phantom)).granting([Cap::Ghost]),
+        );
+        tree.insert(
+            "c",
+            Unlock::new(Requirement::has(Cap::Phantom)).granting([Cap::Cloaking]),
+        );
+
+        let unreachable = |id| UnlockWarning::Unreachable { id };
+        assert_eq!(
+            tree.validate(&BTreeSet::new()),
+            vec![unreachable("a"), unreachable("b"), unreachable("c")]
+        );
+        // A key from outside the tree opens the loop.
+        assert_eq!(tree.validate(&BTreeSet::from([Cap::Ghost])), vec![]);
     }
 
     #[test]
@@ -883,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_reports_cycles_empty_grants_and_bad_requirements() {
+    fn validate_reports_loops_empty_grants_and_bad_requirements() {
         let mut tree = Unlocks::new();
         tree.insert("dead-end", Unlock::free());
         tree.insert(
@@ -902,8 +1014,8 @@ mod tests {
 
         let warnings = tree.validate(&BTreeSet::new());
         assert!(warnings.contains(&UnlockWarning::GrantsNothing { id: "dead-end" }));
-        assert!(warnings.contains(&UnlockWarning::Cycle { id: "loop-a" }));
-        assert!(warnings.contains(&UnlockWarning::Cycle { id: "loop-b" }));
+        assert!(warnings.contains(&UnlockWarning::Unreachable { id: "loop-a" }));
+        assert!(warnings.contains(&UnlockWarning::Unreachable { id: "loop-b" }));
         assert!(warnings.iter().any(|warning| matches!(
             warning,
             UnlockWarning::Requirement { id, message } if *id == "impossible" && message.contains("never hold")

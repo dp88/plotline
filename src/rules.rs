@@ -223,7 +223,8 @@ impl<K: Ord + Clone> Requirement<K> {
     ///
     /// These are the keys inside a [`Requirement::Any`] or a
     /// [`Requirement::AtLeast`]. The walk never enters a
-    /// [`Requirement::Not`], because a forbidden key does not help.
+    /// [`Requirement::Not`], because a forbidden key does not help. A key
+    /// that [`Requirement::required`] returns is left out.
     ///
     /// This is the soft edge set of a dependency graph.
     #[must_use]
@@ -232,10 +233,12 @@ impl<K: Ord + Clone> Requirement<K> {
     }
 
     /// Returns the required and optional keys in one walk.
-    fn edges(&self) -> (BTreeSet<K>, BTreeSet<K>) {
+    pub(crate) fn edges(&self) -> (BTreeSet<K>, BTreeSet<K>) {
         let mut sets = (BTreeSet::new(), BTreeSet::new());
         self.collect_edges(&mut sets, false);
-        sets
+        let (required, mut optional) = sets;
+        optional.retain(|key| !required.contains(key));
+        (required, optional)
     }
 
     fn collect_edges(&self, sets: &mut (BTreeSet<K>, BTreeSet<K>), in_choice: bool) {
