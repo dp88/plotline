@@ -11,10 +11,10 @@ use core::fmt::{Debug, Display, Formatter, Result as FmtResult};
 /// Answers whether an entity holds a capability.
 ///
 /// Every rule reads capabilities through this trait. The crate implements it
-/// for [`BTreeSet`] and [`CapabilitySet`]. A host type can implement it too,
-/// and its answer can mix stored keys with keys it computes from other state,
-/// such as a level or an item count. Each key then has one answer, whoever
-/// asks.
+/// for [`BTreeSet`], the plain set of held keys. A host type can implement it
+/// too, and its answer can mix stored keys with keys it computes from other
+/// state, such as a level or an item count. Each key then has one answer,
+/// whoever asks.
 ///
 /// ```
 /// use std::collections::BTreeSet;
@@ -55,143 +55,12 @@ impl<K: Ord> Has<K> for BTreeSet<K> {
     }
 }
 
-impl<K: Ord> Has<K> for CapabilitySet<K> {
-    fn has(&self, key: &K) -> bool {
-        self.contains(key)
-    }
-}
-
-/// The capabilities one entity holds.
-///
-/// The crate never interprets a key. The host chooses the type and its
-/// meaning. Keys are ordered so that iteration and evaluation are
-/// deterministic.
-///
-/// ```
-/// use plotline::CapabilitySet;
-///
-/// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-/// enum Tech {
-///     Fusion,
-///     Warp,
-/// }
-///
-/// let mut caps = CapabilitySet::from([Tech::Fusion]);
-/// assert!(caps.contains(&Tech::Fusion));
-/// assert!(!caps.contains(&Tech::Warp));
-///
-/// caps.insert(Tech::Warp);
-/// assert_eq!(caps.len(), 2);
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-#[cfg_attr(
-    feature = "serde",
-    serde(bound(
-        serialize = "K: serde::Serialize",
-        deserialize = "K: Ord + serde::Deserialize<'de>"
-    ))
-)]
-pub struct CapabilitySet<K> {
-    keys: BTreeSet<K>,
-}
-
-impl<K> CapabilitySet<K> {
-    /// Creates an empty set.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            keys: BTreeSet::new(),
-        }
-    }
-
-    /// Returns the number of keys.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.keys.len()
-    }
-
-    /// Returns whether the set holds no keys.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
-    }
-
-    /// Iterates over the keys in order.
-    pub fn iter(&self) -> alloc::collections::btree_set::Iter<'_, K> {
-        self.keys.iter()
-    }
-}
-
-impl<K: Ord> CapabilitySet<K> {
-    /// Adds a key. Returns whether the set changed.
-    pub fn insert(&mut self, key: K) -> bool {
-        self.keys.insert(key)
-    }
-
-    /// Removes a key. Returns whether the set changed.
-    pub fn remove(&mut self, key: &K) -> bool {
-        self.keys.remove(key)
-    }
-
-    /// Returns whether the set holds this key.
-    #[must_use]
-    pub fn contains(&self, key: &K) -> bool {
-        self.keys.contains(key)
-    }
-}
-
-impl<K> Default for CapabilitySet<K> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<K: Ord> Extend<K> for CapabilitySet<K> {
-    fn extend<T: IntoIterator<Item = K>>(&mut self, iter: T) {
-        self.keys.extend(iter);
-    }
-}
-
-impl<K: Ord> FromIterator<K> for CapabilitySet<K> {
-    fn from_iter<T: IntoIterator<Item = K>>(iter: T) -> Self {
-        Self {
-            keys: iter.into_iter().collect(),
-        }
-    }
-}
-
-impl<K: Ord, const N: usize> From<[K; N]> for CapabilitySet<K> {
-    fn from(keys: [K; N]) -> Self {
-        keys.into_iter().collect()
-    }
-}
-
-impl<'a, K> IntoIterator for &'a CapabilitySet<K> {
-    type Item = &'a K;
-    type IntoIter = alloc::collections::btree_set::Iter<'a, K>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl<K> IntoIterator for CapabilitySet<K> {
-    type Item = K;
-    type IntoIter = alloc::collections::btree_set::IntoIter<K>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.keys.into_iter()
-    }
-}
-
 /// A requirement over capability keys, held as data.
 ///
 /// The crate never interprets a key. It only asks a [`Has`] holder whether it
-/// holds one. A requirement is plain data, so the host can
-/// clone it, compare it, print it, store it in a file, and read its structure
-/// without running it.
+/// holds one. A requirement is plain data, so the host can clone it, compare
+/// it, print it, store it in a file, and read its structure without running
+/// it.
 ///
 /// # Empty and degenerate cases
 ///
@@ -206,7 +75,8 @@ impl<K> IntoIterator for CapabilitySet<K> {
 /// error. [`Requirement::warning`] reports the traps at author time.
 ///
 /// ```
-/// use plotline::{CapabilitySet, Requirement};
+/// use std::collections::BTreeSet;
+/// use plotline::Requirement;
 ///
 /// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// enum Tech {
@@ -215,7 +85,7 @@ impl<K> IntoIterator for CapabilitySet<K> {
 ///     Cloaking,
 /// }
 ///
-/// let caps = CapabilitySet::from([Tech::Fusion]);
+/// let caps = BTreeSet::from([Tech::Fusion]);
 ///
 /// let cruiser = Requirement::all([
 ///     Requirement::has(Tech::Fusion),
@@ -223,7 +93,7 @@ impl<K> IntoIterator for CapabilitySet<K> {
 /// ]);
 ///
 /// assert!(!cruiser.satisfies(&caps));
-/// assert!(cruiser.satisfies(&CapabilitySet::from([Tech::Fusion, Tech::Warp])));
+/// assert!(cruiser.satisfies(&BTreeSet::from([Tech::Fusion, Tech::Warp])));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -345,7 +215,7 @@ impl<K: Ord + Clone> Requirement<K> {
     /// assert_eq!(rule.optional().iter().copied().collect::<Vec<_>>(), ["gate", "warp"]);
     /// ```
     #[must_use]
-    pub fn required(&self) -> CapabilitySet<K> {
+    pub fn required(&self) -> BTreeSet<K> {
         self.edges().0
     }
 
@@ -357,18 +227,18 @@ impl<K: Ord + Clone> Requirement<K> {
     ///
     /// This is the soft edge set of a dependency graph.
     #[must_use]
-    pub fn optional(&self) -> CapabilitySet<K> {
+    pub fn optional(&self) -> BTreeSet<K> {
         self.edges().1
     }
 
     /// Returns the required and optional keys in one walk.
-    fn edges(&self) -> (CapabilitySet<K>, CapabilitySet<K>) {
-        let mut sets = (CapabilitySet::new(), CapabilitySet::new());
+    fn edges(&self) -> (BTreeSet<K>, BTreeSet<K>) {
+        let mut sets = (BTreeSet::new(), BTreeSet::new());
         self.collect_edges(&mut sets, false);
         sets
     }
 
-    fn collect_edges(&self, sets: &mut (CapabilitySet<K>, CapabilitySet<K>), in_choice: bool) {
+    fn collect_edges(&self, sets: &mut (BTreeSet<K>, BTreeSet<K>), in_choice: bool) {
         match self {
             Self::Has(key) => {
                 let side = if in_choice { &mut sets.1 } else { &mut sets.0 };
@@ -485,7 +355,8 @@ impl<K> Requirement<K> {
 /// The [`Display`] implementation draws the tree, one node per line.
 ///
 /// ```
-/// use plotline::{CapabilitySet, Requirement};
+/// use std::collections::BTreeSet;
+/// use plotline::Requirement;
 ///
 /// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// enum Tech {
@@ -493,7 +364,7 @@ impl<K> Requirement<K> {
 ///     Warp,
 /// }
 ///
-/// let caps = CapabilitySet::from([Tech::Fusion]);
+/// let caps = BTreeSet::from([Tech::Fusion]);
 /// let rule = Requirement::all([Requirement::has(Tech::Fusion), Requirement::has(Tech::Warp)]);
 ///
 /// let result = rule.evaluate(&caps);
@@ -587,9 +458,10 @@ impl<K: Clone> Evaluation<K> {
     /// those alternatives.
     ///
     /// ```
-    /// use plotline::{CapabilitySet, Requirement};
+    /// use std::collections::BTreeSet;
+    /// use plotline::Requirement;
     ///
-    /// let held = CapabilitySet::<&str>::new();
+    /// let held = BTreeSet::<&str>::new();
     ///
     /// // One of two routes is enough, so neither is "missing".
     /// let choice = Requirement::any([Requirement::has("warp"), Requirement::has("gate")]);
@@ -669,31 +541,8 @@ mod tests {
     }
     use Tech::{A, B, C, D};
 
-    fn caps(keys: &[Tech]) -> CapabilitySet<Tech> {
+    fn caps(keys: &[Tech]) -> BTreeSet<Tech> {
         keys.iter().copied().collect()
-    }
-
-    #[test]
-    fn a_set_tracks_membership_and_order() {
-        // Tech has no Default, which proves the impl carries no K bound.
-        let mut set = CapabilitySet::<Tech>::default();
-        assert!(set.is_empty());
-
-        assert!(set.insert(C));
-        assert!(!set.insert(C), "a repeat insert changes nothing");
-        set.extend([A, C]);
-        assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec![A, C]);
-
-        assert!(set.remove(&C));
-        assert!(!set.remove(&C));
-        assert_eq!(set, CapabilitySet::from([A]));
-    }
-
-    #[test]
-    fn a_set_holds_any_ordered_key() {
-        let mut set = CapabilitySet::new();
-        set.insert(String::from("survive-frozen"));
-        assert!(set.contains(&String::from("survive-frozen")));
     }
 
     /// The boolean answer and the evaluation tree must always agree.
@@ -836,7 +685,7 @@ mod tests {
 
     #[test]
     fn string_keys_need_no_rust_vocabulary() {
-        let held: CapabilitySet<String> = ["warp".to_owned()].into_iter().collect();
+        let held: BTreeSet<String> = ["warp".to_owned()].into_iter().collect();
         assert!(Requirement::all([Requirement::has("warp".to_owned())]).satisfies(&held));
     }
 
@@ -902,7 +751,7 @@ mod tests {
         ]);
         assert_eq!(
             rule.required().iter().copied().collect::<Vec<_>>(),
-            rule.evaluate(&CapabilitySet::new()).missing()
+            rule.evaluate(&BTreeSet::new()).missing()
         );
     }
 

@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use plotline::{CapabilitySet, Requirement, Unlock, Unlocks};
+use plotline::{Requirement, Unlock, Unlocks};
 
 /// The host owns this vocabulary. The crate never interprets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,7 +69,7 @@ fn tech_tree() -> Tree {
 
 fn main() {
     let tree = tech_tree();
-    let mut held = CapabilitySet::new();
+    let mut held = BTreeSet::new();
     let mut taken = BTreeSet::new();
 
     println!("== The tree, before any research ==");
@@ -108,7 +108,7 @@ fn main() {
 }
 
 /// Prints the tree by rank. Rank is the column a layout would use.
-fn draw(tree: &Tree, held: &CapabilitySet<Cap>, taken: &BTreeSet<&str>) {
+fn draw(tree: &Tree, held: &BTreeSet<Cap>, taken: &BTreeSet<&str>) {
     let ranks = tree.ranks();
     let width = tree.ids().map(|id| id.len()).max().unwrap_or(0);
 
@@ -142,7 +142,7 @@ fn draw(tree: &Tree, held: &CapabilitySet<Cap>, taken: &BTreeSet<&str>) {
 }
 
 fn report_warnings(tree: &Tree) {
-    let warnings = tree.validate(&CapabilitySet::new());
+    let warnings = tree.validate(&BTreeSet::new());
     if warnings.is_empty() {
         println!("no problems in a {}-node tree", tree.len());
         return;

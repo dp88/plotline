@@ -5,12 +5,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use crate::rules::{CapabilitySet, Evaluation, Has, Requirement};
+use crate::rules::{Evaluation, Has, Requirement};
 
 /// One node: what it demands, and what it gives.
 ///
 /// ```
-/// use plotline::{CapabilitySet, Requirement, Unlock};
+/// use std::collections::BTreeSet;
+/// use plotline::{Requirement, Unlock};
 ///
 /// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// enum Cap {
@@ -21,7 +22,7 @@ use crate::rules::{CapabilitySet, Evaluation, Has, Requirement};
 /// let fusion = Unlock::free().granting([Cap::Fusion]);
 /// let warp = Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]);
 ///
-/// assert!(fusion.requires.satisfies(&CapabilitySet::new()));
+/// assert!(fusion.requires.satisfies(&BTreeSet::new()));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -36,7 +37,7 @@ pub struct Unlock<K> {
     /// What the entity must hold before it can take this node.
     pub requires: Requirement<K>,
     /// What taking this node adds to the entity.
-    pub grants: CapabilitySet<K>,
+    pub grants: BTreeSet<K>,
 }
 
 impl<K: Ord> Unlock<K> {
@@ -45,7 +46,7 @@ impl<K: Ord> Unlock<K> {
     pub fn new(requires: Requirement<K>) -> Self {
         Self {
             requires,
-            grants: CapabilitySet::new(),
+            grants: BTreeSet::new(),
         }
     }
 
@@ -103,7 +104,8 @@ pub enum UnlockWarning<I, K> {
 /// changes with it.
 ///
 /// ```
-/// use plotline::{CapabilitySet, Requirement, Unlock, Unlocks};
+/// use std::collections::BTreeSet;
+/// use plotline::{Requirement, Unlock, Unlocks};
 ///
 /// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// enum Cap {
@@ -121,7 +123,7 @@ pub enum UnlockWarning<I, K> {
 /// // The arrow from fusion-power to warp-drive is derived, not declared.
 /// assert_eq!(tree.dependencies(&"warp-drive"), vec![&"fusion-power"]);
 ///
-/// let mut held = CapabilitySet::new();
+/// let mut held = BTreeSet::new();
 /// assert_eq!(tree.available(&held).collect::<Vec<_>>(), vec![&"fusion-power"]);
 ///
 /// tree.take(&"fusion-power", &mut held);
@@ -286,7 +288,7 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
         self.edges(id, Requirement::optional)
     }
 
-    fn edges(&self, id: &I, keys_of: fn(&Requirement<K>) -> CapabilitySet<K>) -> Vec<&I> {
+    fn edges(&self, id: &I, keys_of: fn(&Requirement<K>) -> BTreeSet<K>) -> Vec<&I> {
         let Some(node) = self.get(id) else {
             return Vec::new();
         };
@@ -481,7 +483,7 @@ mod tests {
     #[test]
     fn a_free_node_is_available_from_nothing() {
         let tree = tree();
-        let held = CapabilitySet::new();
+        let held = BTreeSet::new();
         assert!(tree.is_available(&"fusion", &held));
         assert!(!tree.is_available(&"warp", &held));
         assert!(!tree.is_available(&"absent", &held));
@@ -490,7 +492,7 @@ mod tests {
     #[test]
     fn available_and_locked_split_the_graph() {
         let tree = tree();
-        let held = CapabilitySet::from([Cap::Fusion]);
+        let held = BTreeSet::from([Cap::Fusion]);
         let available: Vec<_> = tree.available(&held).copied().collect();
         assert_eq!(available, vec!["antimatter", "fusion", "warp"]);
     }
@@ -541,7 +543,7 @@ mod tests {
     #[test]
     fn taking_a_node_adds_its_grants() {
         let tree = tree();
-        let mut held = CapabilitySet::new();
+        let mut held = BTreeSet::new();
 
         assert!(!tree.take(&"warp", &mut held), "locked nodes do not apply");
         assert!(held.is_empty());
@@ -618,7 +620,7 @@ mod tests {
     #[test]
     fn missing_reports_the_shortfall_for_one_node() {
         let tree = tree();
-        let held = CapabilitySet::new();
+        let held = BTreeSet::new();
         assert_eq!(tree.missing(&"warp", &held), Some(vec![Cap::Fusion]));
         assert_eq!(tree.missing(&"fusion", &held), Some(vec![]));
         assert_eq!(
@@ -632,7 +634,7 @@ mod tests {
     #[test]
     fn a_frontier_falls_out_of_the_missing_count() {
         let tree = tree();
-        let held = CapabilitySet::new();
+        let held = BTreeSet::new();
         // A satisfied node has no gap at all, so one gap means locked.
         let frontier: Vec<_> = tree
             .ids()
@@ -645,7 +647,7 @@ mod tests {
     #[test]
     fn evaluate_explains_a_locked_node() {
         let tree = tree();
-        let result = tree.evaluate(&"cloaking", &CapabilitySet::new()).unwrap();
+        let result = tree.evaluate(&"cloaking", &BTreeSet::new()).unwrap();
         assert!(!result.satisfied());
         assert_eq!(result.missing(), vec![Cap::Warp]);
     }
@@ -721,7 +723,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_a_sound_tree() {
-        assert!(tree().validate(&CapabilitySet::new()).is_empty());
+        assert!(tree().validate(&BTreeSet::new()).is_empty());
     }
 
     #[test]
@@ -732,7 +734,7 @@ mod tests {
             Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
         );
         assert_eq!(
-            tree.validate(&CapabilitySet::new()),
+            tree.validate(&BTreeSet::new()),
             vec![UnlockWarning::Ungrantable {
                 id: "orbital-yard",
                 capability: Cap::Fusion,
@@ -748,7 +750,7 @@ mod tests {
             Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
         );
         // A species trait grants Fusion, so the node is reachable after all.
-        let external = CapabilitySet::from([Cap::Fusion]);
+        let external = BTreeSet::from([Cap::Fusion]);
         assert!(tree.validate(&external).is_empty());
     }
 
@@ -770,7 +772,7 @@ mod tests {
             Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Warp]),
         );
 
-        let warnings = tree.validate(&CapabilitySet::new());
+        let warnings = tree.validate(&BTreeSet::new());
         assert!(warnings.contains(&UnlockWarning::GrantsNothing { id: "dead-end" }));
         assert!(warnings.contains(&UnlockWarning::Cycle { id: "loop-a" }));
         assert!(warnings.contains(&UnlockWarning::Cycle { id: "loop-b" }));
@@ -790,7 +792,7 @@ mod tests {
         // It forms no cycle, because a node never depends on itself.
         assert_eq!(tree.rank(&"bootstrap"), Some(0));
         assert!(
-            tree.validate(&CapabilitySet::new())
+            tree.validate(&BTreeSet::new())
                 .contains(&UnlockWarning::Ungrantable {
                     id: "bootstrap",
                     capability: Cap::Fusion,
@@ -806,7 +808,7 @@ mod tests {
             Unlock::new(Requirement::has(Cap::Fusion)).granting([Cap::Fusion]),
         );
         tree.insert("reactor", Unlock::free().granting([Cap::Fusion]));
-        assert!(tree.validate(&CapabilitySet::new()).is_empty());
+        assert!(tree.validate(&BTreeSet::new()).is_empty());
     }
 
     #[test]
@@ -824,7 +826,7 @@ mod tests {
     #[test]
     fn taking_every_available_node_walks_the_whole_tree() {
         let tree = tree();
-        let mut held = CapabilitySet::new();
+        let mut held = BTreeSet::new();
         let mut taken = alloc::collections::BTreeSet::new();
 
         loop {

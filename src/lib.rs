@@ -12,7 +12,7 @@
 //! # The pieces
 //!
 //! [`Requirement`] holds a boolean rule as data. [`Has`] answers whether an
-//! entity holds a key, and [`CapabilitySet`] is the plain set that does so.
+//! entity holds a key; a plain `BTreeSet` of keys is the simplest holder.
 //! [`Unlocks`] joins many rules into a graph. Together they cover
 //! prerequisites, technology trees, permissions, and habitability.
 //!
@@ -49,9 +49,9 @@
 //! # Feature flags
 //!
 //! The crate is `no_std` and needs `alloc`. The `serde` feature derives
-//! `Serialize` and `Deserialize` for [`Requirement`], [`CapabilitySet`],
-//! [`Evaluation`], [`Unlock`], and [`Unlocks`], so rules are authorable in
-//! JSON, RON, or YAML.
+//! `Serialize` and `Deserialize` for [`Requirement`], [`Evaluation`],
+//! [`Unlock`], and [`Unlocks`], so rules are authorable in JSON, RON, or
+//! YAML.
 
 #![no_std]
 
@@ -60,7 +60,7 @@ extern crate alloc;
 mod rules;
 mod unlocks;
 
-pub use rules::{CapabilitySet, Evaluation, Has, Requirement};
+pub use rules::{Evaluation, Has, Requirement};
 pub use unlocks::{Unlock, UnlockWarning, Unlocks};
 
 /// The README is compiled as part of the test suite, so its examples cannot rot.

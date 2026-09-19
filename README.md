@@ -20,11 +20,13 @@ plotline = "0.3"
 ```
 
 A requirement is a rule held as data, over capability keys you define. The
-crate never interprets a key. It answers whether a set holds one, and
-explains what failed.
+crate never interprets a key. It answers whether a holder has one, and
+explains what failed. A plain `BTreeSet` is a holder, and so is any type
+that implements `Has`.
 
 ```rust
-use plotline::{CapabilitySet, Requirement};
+use std::collections::BTreeSet;
+use plotline::Requirement;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Cap {
@@ -34,7 +36,7 @@ enum Cap {
     AlliedFleet,
 }
 
-let humans = CapabilitySet::from([Cap::FrozenHabitation, Cap::Shipyard]);
+let humans = BTreeSet::from([Cap::FrozenHabitation, Cap::Shipyard]);
 
 let deneb_iv = Requirement::all([
     Requirement::has(Cap::FrozenHabitation),
@@ -61,7 +63,8 @@ authors the edges. One node grants a key, another requires it, and that is
 the arrow, so a rule and its graph can never drift apart.
 
 ```rust
-use plotline::{CapabilitySet, Requirement, Unlock, Unlocks};
+use std::collections::BTreeSet;
+use plotline::{Requirement, Unlock, Unlocks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Cap {
@@ -79,7 +82,7 @@ tree.insert(
 assert_eq!(tree.dependencies(&"warp-drive"), vec![&"fusion-power"]);
 assert_eq!(tree.rank(&"warp-drive"), Some(1));
 
-let mut held = CapabilitySet::new();
+let mut held = BTreeSet::new();
 tree.take(&"fusion-power", &mut held);
 assert!(tree.is_available(&"warp-drive", &held));
 ```
@@ -102,8 +105,7 @@ content nothing can reach.
 - Rust 1.85 or later, edition 2024.
 - `no_std` with `alloc`; no required dependencies.
 - `serde` (off): derives `Serialize` and `Deserialize` for `Requirement`,
-  `CapabilitySet`, `Evaluation`, `Unlock`, and `Unlocks`. It works without
-  `std`.
+  `Evaluation`, `Unlock`, and `Unlocks`. It works without `std`.
 
 ## More examples and documentation
 

@@ -2,7 +2,9 @@
 //!
 //! Run it with `cargo run --example unlocks`.
 
-use plotline::{CapabilitySet, Requirement};
+use std::collections::BTreeSet;
+
+use plotline::Requirement;
 
 /// The host owns this vocabulary. The crate never interprets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -19,7 +21,7 @@ fn main() {
     // which one granted what.
     let species = [Cap::FrozenHabitation];
     let technologies = [Cap::Shipyard];
-    let mut held = CapabilitySet::new();
+    let mut held = BTreeSet::new();
     held.extend(species);
     held.extend(technologies);
 
@@ -57,7 +59,7 @@ fn main() {
 }
 
 /// Prints the boolean answer, the conservative shortfall, and the full tree.
-fn report(requirement: &Requirement<Cap>, held: &CapabilitySet<Cap>) {
+fn report(requirement: &Requirement<Cap>, held: &BTreeSet<Cap>) {
     let result = requirement.evaluate(held);
     println!("satisfied: {}", result.satisfied());
     println!("missing:   {:?}", result.missing());

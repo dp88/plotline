@@ -1,7 +1,9 @@
 //! Rules survive a trip through a data file.
 #![cfg(feature = "serde")]
 
-use plotline::{CapabilitySet, Evaluation, Requirement, Unlock, Unlocks};
+use std::collections::BTreeSet;
+
+use plotline::{Evaluation, Requirement, Unlock, Unlocks};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -41,10 +43,10 @@ fn a_decoded_requirement_answers_the_same_way() {
     let decoded: Requirement<Tech> = serde_json::from_str(&encoded).unwrap();
 
     for held in [
-        CapabilitySet::from([]),
-        CapabilitySet::from([Tech::Fusion]),
-        CapabilitySet::from([Tech::Fusion, Tech::Warp]),
-        CapabilitySet::from([Tech::Fusion, Tech::Warp, Tech::Cloaking]),
+        BTreeSet::from([]),
+        BTreeSet::from([Tech::Fusion]),
+        BTreeSet::from([Tech::Fusion, Tech::Warp]),
+        BTreeSet::from([Tech::Fusion, Tech::Warp, Tech::Cloaking]),
     ] {
         assert_eq!(cruiser().satisfies(&held), decoded.satisfies(&held));
     }
@@ -78,12 +80,8 @@ fn a_hand_written_document_loads() {
         ])
     );
 
-    assert!(rule.satisfies(&CapabilitySet::from([Tech::Fusion, Tech::Cloaking])));
-    assert!(!rule.satisfies(&CapabilitySet::from([
-        Tech::Fusion,
-        Tech::Warp,
-        Tech::Cloaking
-    ])));
+    assert!(rule.satisfies(&BTreeSet::from([Tech::Fusion, Tech::Cloaking])));
+    assert!(!rule.satisfies(&BTreeSet::from([Tech::Fusion, Tech::Warp, Tech::Cloaking])));
 }
 
 #[test]
@@ -91,7 +89,7 @@ fn string_keys_need_no_rust_vocabulary() {
     let document = r#"{ "All": [{ "Has": "survive-frozen" }, { "Has": "survive-toxic" }] }"#;
     let rule: Requirement<String> = serde_json::from_str(document).unwrap();
 
-    let held: CapabilitySet<String> = ["survive-frozen".to_owned()].into_iter().collect();
+    let held: BTreeSet<String> = ["survive-frozen".to_owned()].into_iter().collect();
     assert_eq!(
         rule.evaluate(&held).missing(),
         vec!["survive-toxic".to_owned()]
@@ -99,21 +97,8 @@ fn string_keys_need_no_rust_vocabulary() {
 }
 
 #[test]
-fn a_capability_set_round_trips() {
-    let held = CapabilitySet::from([Tech::Fusion, Tech::Warp]);
-    let encoded = serde_json::to_string(&held).unwrap();
-    assert_eq!(
-        encoded, r#"["Fusion","Warp"]"#,
-        "a set encodes as a plain list"
-    );
-
-    let decoded: CapabilitySet<Tech> = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(decoded, held);
-}
-
-#[test]
 fn an_evaluation_round_trips() {
-    let result = cruiser().evaluate(&CapabilitySet::from([Tech::Fusion]));
+    let result = cruiser().evaluate(&BTreeSet::from([Tech::Fusion]));
     let encoded = serde_json::to_string(&result).unwrap();
     let decoded: Evaluation<Tech> = serde_json::from_str(&encoded).unwrap();
 
@@ -147,7 +132,7 @@ fn a_whole_tree_round_trips() {
         vec![&"fusion-power".to_owned()]
     );
     assert_eq!(decoded.rank(&"warp-drive".to_owned()), Some(1));
-    assert!(decoded.validate(&CapabilitySet::new()).is_empty());
+    assert!(decoded.validate(&BTreeSet::new()).is_empty());
 }
 
 #[test]
@@ -160,9 +145,9 @@ fn a_hand_written_tree_loads() {
     "#;
 
     let tree: Unlocks<String, Tech> = serde_json::from_str(document).unwrap();
-    let mut held = CapabilitySet::new();
+    let mut held = BTreeSet::new();
 
     assert!(tree.take(&"fusion-power".to_owned(), &mut held));
     assert!(tree.take(&"warp-drive".to_owned(), &mut held));
-    assert_eq!(held, CapabilitySet::from([Tech::Fusion, Tech::Warp]));
+    assert_eq!(held, BTreeSet::from([Tech::Fusion, Tech::Warp]));
 }
