@@ -26,8 +26,9 @@ pub struct Limits {
     /// The most sequences a chain may stack through calls. The first
     /// sequence counts as one. The default is 32.
     pub call_depth: usize,
-    /// The most steps one [`Runner::advance`] or [`Runner::resume`] may run
-    /// before the next action. The default is 10 000.
+    /// The most steps one [`Runner::advance`] or [`Runner::resume`] may run.
+    /// The count includes the step that hands out the action. The default is
+    /// 10 000.
     pub steps_per_advance: usize,
 }
 
@@ -252,7 +253,8 @@ impl Runner {
     /// Answers the waiting action, then runs the chain as
     /// [`Runner::advance`] does.
     ///
-    /// Call it only after [`Status::Act`]. Without a waiting action, a debug
+    /// Call it only after [`Status::Act`]. With no chain, it returns
+    /// [`Status::Idle`]. While a chain runs with no waiting action, a debug
     /// build panics, and a release build ignores the answer and advances.
     #[expect(
         clippy::needless_pass_by_value,

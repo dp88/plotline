@@ -110,18 +110,24 @@
 //! # Validation
 //!
 //! [`Library::validate`] reports steps that name a missing sequence, rules
-//! that report a warning, and steps that never run. [`Unlocks::validate`]
-//! reports keys that nothing grants and nodes that no order of takes
-//! reaches. Cycles in a library are valid, because a hub that loops is a
-//! normal dialog.
+//! that report a warning, and the first step of each tail that never runs.
+//! Cycles in a library are valid, because a hub that loops is a normal
+//! dialog.
+//!
+//! [`Unlocks::validate`] reads required keys only. It reports a required key
+//! that nothing grants, and a node whose required keys no order of takes
+//! supplies. It does not check the keys inside `Any` or `AtLeast`.
 //!
 //! # Limits and errors
 //!
 //! Content can loop without an action, for example two sequences that jump
-//! to each other. [`Limits`] caps the call depth and the steps between two
-//! actions, and the runner returns [`Status::Aborted`] with the reason. A
-//! missing sequence aborts the chain with its name. The runner runs no host
-//! code, so it has nothing to catch.
+//! to each other. [`Limits`] caps the call depth and the steps that one
+//! advance runs, and the runner returns [`Status::Aborted`] with the reason.
+//! A missing sequence aborts the chain with its name.
+//!
+//! The runner calls host code only through [`Has::has`]. It catches no
+//! panic. A panic in `has` unwinds through the call to the runner, and the
+//! cursor stays on the step whose rule asked.
 //!
 //! # Files and saves
 //!

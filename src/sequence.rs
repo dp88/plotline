@@ -354,7 +354,8 @@ pub enum Problem {
     /// A rule in the step reports an authoring warning.
     Rule(String),
     /// The step never runs, because an earlier step always leaves the
-    /// sequence.
+    /// sequence. The warning marks the first such step. Every later step in
+    /// the sequence never runs either.
     Unreachable,
 }
 

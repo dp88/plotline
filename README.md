@@ -102,16 +102,16 @@ for node in tree.view(&held, &taken) {
 ```
 
 `view` gives each node's status, layout column, and edges in one call.
-`validate` reports keys that nothing grants and nodes that nothing can
-reach.
+`validate` checks the required keys of each node. It reports a key that
+nothing grants, and a node that a loop or a missing key blocks.
 
 ## Why
 
 - **Plain data.** A script is a list of `Step` values. It prints, compares,
   validates, and loads from JSON, RON, or YAML.
-- **Your loop, your code.** The runner never calls your code. Every effect
-  lives in one `match` in the host, so a test can check the actions a script
-  produces.
+- **Your loop, your code.** The runner reads keys through your `Has` holder
+  and hands every action back to you. Every effect lives in one `match` in
+  the host, so a test can check the actions a script produces.
 - **One answer per key.** Stored and computed keys go through one `Has`
   trait, so a dialog gate, a tooltip, and a tech tree always agree.
 - **Rules that explain themselves.** An `Evaluation` prints as a ✓/✗ tree

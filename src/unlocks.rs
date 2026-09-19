@@ -121,8 +121,8 @@ pub struct NodeView<'a, I> {
     pub id: &'a I,
     /// Where the node stands.
     pub status: NodeStatus,
-    /// The layout column, or `None` when no order of takes reaches the node.
-    /// See [`Unlocks::ranks`].
+    /// The layout column, or `None` when the node has no rank. See
+    /// [`Unlocks::ranks`].
     pub rank: Option<usize>,
     /// The nodes that must come first. Draw these as solid edges. See
     /// [`Unlocks::dependencies`].
@@ -375,9 +375,10 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
     /// those.
     ///
     /// Use it as the column index in a tree layout. Every edge that
-    /// [`Unlocks::dependencies`] returns points to a higher rank. A node that
-    /// no order of takes reaches has no rank, so it is left out.
-    /// [`Unlocks::validate`] reports those.
+    /// [`Unlocks::dependencies`] returns points to a higher rank. A node has
+    /// no rank when one of its required keys has other sources and none of
+    /// them has a rank, as on a loop. It is left out, and
+    /// [`Unlocks::validate`] reports it.
     #[must_use]
     pub fn ranks(&self) -> BTreeMap<I, usize>
     where
@@ -502,6 +503,10 @@ impl<I: Ord + Clone, K: Ord + Clone> Unlocks<I, K> {
     /// `external` holds the capabilities that other systems grant, such as a
     /// species trait or a starting bonus. Without it, every requirement that
     /// no node satisfies looks like dead content.
+    ///
+    /// The checks read required keys only, as [`Unlocks::ranks`] does. They
+    /// do not look inside `Any` or `AtLeast`, so a node that only a choice
+    /// gates is not checked.
     #[must_use]
     pub fn validate(&self, external: &(impl Has<K> + ?Sized)) -> Vec<UnlockWarning<I, K>> {
         let reached = self.rounds(|key, _| external.has(key));

@@ -16,7 +16,7 @@ drops from 66 items, 7 traits, and 3 modules to 19 items and 1 trait.
 - `Library<A, K>`: named sequences. `SequenceRef` is a sequence name, so a
   file can refer to a sequence before it defines it.
 - `Library::validate`: steps that name a missing sequence, rules with an
-  authoring warning, and steps that never run.
+  authoring warning, and the first step of each tail that never runs.
 - `Runner::advance` and `Runner::resume`, with `Status`, `Answer`,
   `Abort`, `Busy`, and `Limits`. The wait for an action is the gap between
   the two calls.
@@ -61,8 +61,8 @@ drops from 66 items, 7 traits, and 3 modules to 19 items and 1 trait.
 - `Unlocks::rank` and `Unlocks::missing`.
 - `UnlockWarning::Cycle`. `UnlockWarning::Unreachable` replaces it, and it
   also covers a node behind a loop.
-- The `std` feature. The runner runs no host code, so it needs no panic
-  guard.
+- The `std` feature and panic isolation. The runner calls host code only
+  through `Has::has`, and a panic there unwinds to the host.
 
 ### Migration
 
@@ -79,10 +79,10 @@ drops from 66 items, 7 traits, and 3 modules to 19 items and 1 trait.
 | `conditions::check` | a computed key |
 | `effects::grant` and `effects::revoke` | actions that the host performs |
 | `CapabilitySet<K>` | `BTreeSet<K>` |
-| `tree.rank(&id)` | `tree.ranks().get(&id)`, or `rank` in `view` |
+| `tree.rank(&id)` | `tree.ranks().get(&id).copied()`, or `rank` in `view` |
 | `tree.missing(&id, &held)` | `tree.evaluate(&id, &held).map(\|e\| e.missing())` |
 | `Runner::drain_events` and `Context::note` | logging in the host's `match` |
-| `FlowModel` | `Library::validate`, which reports steps that never run |
+| `FlowModel` | `Library::validate`, which reports the first step of each tail that never runs |
 
 ## 0.3.0 — 2026-09-14
 
