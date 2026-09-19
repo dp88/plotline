@@ -1,7 +1,9 @@
 //! A library of sequences survives a trip through a data file.
 #![cfg(feature = "serde")]
 
-use plotline::{Library, Requirement, SequenceRef, Step};
+use std::collections::BTreeSet;
+
+use plotline::{Answer, Library, Requirement, Runner, SequenceRef, Status, Step};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,17 +48,8 @@ fn ring_quest() -> Script {
     library
 }
 
-#[test]
-fn a_library_round_trips() {
-    let encoded = serde_json::to_string(&ring_quest()).unwrap();
-    let decoded: Script = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(decoded, ring_quest());
-}
-
-#[test]
-fn a_hand_written_library_loads() {
-    // The shape an author writes by hand. A sequence name is a plain string.
-    let document = r#"
+/// The shape an author writes by hand. A sequence name is a plain string.
+const HAND_WRITTEN: &str = r#"
     {
       "hub": [
         { "Act": { "Say": { "who": "Elder", "line": "Have you found my ring?" } } },
@@ -75,7 +68,16 @@ fn a_hand_written_library_loads() {
     }
     "#;
 
-    let library: Script = serde_json::from_str(document).unwrap();
+#[test]
+fn a_library_round_trips() {
+    let encoded = serde_json::to_string(&ring_quest()).unwrap();
+    let decoded: Script = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, ring_quest());
+}
+
+#[test]
+fn a_hand_written_library_loads() {
+    let library: Script = serde_json::from_str(HAND_WRITTEN).unwrap();
     assert_eq!(library, ring_quest());
 }
 
@@ -95,4 +97,39 @@ fn a_repeated_sequence_name_is_an_error() {
     let document = r#"{ "hub": ["Return"], "hub": [{ "Goto": null }] }"#;
     let error = serde_json::from_str::<Script>(document).unwrap_err();
     assert!(error.to_string().contains("twice"), "{error}");
+}
+
+#[test]
+fn a_hand_written_library_runs() {
+    let library: Script =
+        serde_json::from_str(&serde_json::to_string(&ring_quest()).unwrap()).unwrap();
+
+    let play = |held: &BTreeSet<Key>| {
+        let mut runner = Runner::default();
+        runner.start("hub").unwrap();
+        let mut said = Vec::new();
+        let mut status = runner.advance(&library, held);
+        while let Status::Act(action) = status {
+            let answer = match action {
+                Action::Say { line, .. } => {
+                    said.push(line.clone());
+                    Answer::Done
+                }
+                // The player asks for the hint, which returns to the hub.
+                Action::Choose(replies) => Answer::Call(replies[1].1.clone()),
+            };
+            status = runner.resume(answer, &library, held);
+        }
+        assert_eq!(status, Status::Finished);
+        said
+    };
+
+    assert_eq!(
+        play(&BTreeSet::new()),
+        ["Have you found my ring?", "Near the old well."]
+    );
+    assert_eq!(
+        play(&BTreeSet::from([Key::HasRing])),
+        ["Have you found my ring?", "You have my thanks."]
+    );
 }

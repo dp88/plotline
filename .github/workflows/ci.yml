@@ -33,6 +33,7 @@ jobs:
       - run: cargo test --all-features --doc
       - run: cargo test --release --all-features --all-targets
       - run: cargo test --release --all-features --doc
+      - run: cargo run --example dialog
       - run: cargo run --example unlocks
       - run: cargo run --example techtree
 
