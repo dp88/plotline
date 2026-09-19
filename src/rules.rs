@@ -288,6 +288,7 @@ impl<K> Requirement<K> {
                 requirements
                     .iter()
                     .filter(|item| item.satisfies(holder))
+                    .take(*count)
                     .count()
                     >= *count
             }
@@ -449,10 +450,11 @@ impl<K> Evaluation<K> {
     }
 }
 
-impl<K: Clone> Evaluation<K> {
+impl<K: Clone + PartialEq> Evaluation<K> {
     /// Returns the capabilities that must be added to satisfy the requirement.
     ///
-    /// The answer is deliberately conservative. It descends through
+    /// Each key appears once, in the order the tree first names it. The
+    /// answer is deliberately conservative. It descends through
     /// [`Evaluation::All`] nodes only, and collects the keys of failed
     /// [`Evaluation::Has`] leaves. Adding every returned key always helps.
     ///
@@ -487,7 +489,11 @@ impl<K: Clone> Evaluation<K> {
             Self::Has {
                 key,
                 satisfied: false,
-            } => keys.push(key.clone()),
+            } => {
+                if !keys.contains(key) {
+                    keys.push(key.clone());
+                }
+            }
             Self::All { children, .. } => {
                 for child in children {
                     child.collect_missing(keys);
@@ -726,6 +732,16 @@ mod tests {
         for (rule, expect) in cases {
             assert_eq!(rule.evaluate(&held).missing(), expect, "{rule:?}");
         }
+    }
+
+    #[test]
+    fn missing_names_each_key_once() {
+        // Two composed rules that share a key.
+        let rule = Requirement::all([
+            Requirement::all([Requirement::has(A), Requirement::has(B)]),
+            Requirement::all([Requirement::has(A), Requirement::has(C)]),
+        ]);
+        assert_eq!(rule.evaluate(&caps(&[])).missing(), vec![A, B, C]);
     }
 
     #[test]
