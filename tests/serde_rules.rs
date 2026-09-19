@@ -170,3 +170,16 @@ fn a_misspelled_node_field_is_an_error() {
         r#"{ "warp-drive": { "requires": { "All": [] }, "grants": [], "grant": ["Warp"] } }"#;
     assert!(serde_json::from_str::<Unlocks<String, Tech>>(document).is_err());
 }
+
+#[test]
+fn an_unknown_rule_field_is_an_error() {
+    // Every known field is present, so only the unknown-field check catches it.
+    let document = r#"
+    { "All": [{ "AtLeast": { "count": 1, "requirements": [{ "Has": "Warp" }], "cuont": 2 } }] }
+    "#;
+    let error = serde_json::from_str::<Requirement<Tech>>(document).unwrap_err();
+    assert!(error.to_string().contains("cuont"), "{error}");
+
+    let result = r#"{ "Has": { "key": "Warp", "satisfied": true, "extra": 1 } }"#;
+    assert!(serde_json::from_str::<Evaluation<Tech>>(result).is_err());
+}

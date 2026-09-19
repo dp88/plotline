@@ -190,6 +190,7 @@ impl core::error::Error for Busy {}
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Runner {
     #[cfg_attr(feature = "serde", serde(skip))]
     limits: Limits,
@@ -326,6 +327,7 @@ impl Runner {
 /// One running chain: a call stack of positions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 struct Chain {
     current: Frame,
     callers: Vec<Frame>,
@@ -336,6 +338,7 @@ struct Chain {
 /// until the callee returns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 struct Frame {
     sequence: SequenceRef,
     index: usize,
@@ -932,6 +935,19 @@ mod tests {
         );
         let mut runner: Runner = serde_json::from_str(&calling).unwrap();
         assert_eq!(runner.advance(&library, &held), Status::Finished);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn a_save_with_an_unknown_field_is_an_error() {
+        // Without the check, the misspelled key loads as an idle runner.
+        let misspelled =
+            r#"{"chian":{"current":{"sequence":"main","index":0},"callers":[],"waiting":true}}"#;
+        let error = serde_json::from_str::<Runner>(misspelled).unwrap_err();
+        assert!(error.to_string().contains("chian"), "{error}");
+
+        let extra = r#"{"chain":{"current":{"sequence":"main","index":0,"extra":1},"callers":[],"waiting":true}}"#;
+        assert!(serde_json::from_str::<Runner>(extra).is_err());
     }
 
     #[test]
