@@ -2,10 +2,7 @@
 //!
 //! Run it with `cargo run --example unlocks`.
 
-use plotline::{
-    CapabilitySet, Library, QueryCtx, Requirement, Runner, Sequence, TypeMap, conditions, effects,
-    steps,
-};
+use plotline::{CapabilitySet, Requirement};
 
 /// The host owns this vocabulary. The crate never interprets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,11 +11,7 @@ enum Cap {
     HighGravityHabitation,
     ToxicHabitation,
     Shipyard,
-}
-
-/// Host state that the capability vocabulary does not cover.
-struct Empire {
-    colony_ships: usize,
+    AlliedFleet,
 }
 
 fn main() {
@@ -37,7 +30,7 @@ fn main() {
         Requirement::has(Cap::HighGravityHabitation),
         Requirement::any([
             Requirement::has(Cap::Shipyard),
-            Requirement::named("borrowed-fleet"),
+            Requirement::has(Cap::AlliedFleet),
         ]),
     ]);
 
@@ -61,8 +54,6 @@ fn main() {
 
     println!("\n== Ophiuchus II ==");
     report(&ophiuchus_ii, &held);
-
-    colonize(deneb_iv, held);
 }
 
 /// Prints the boolean answer, the conservative shortfall, and the full tree.
@@ -71,45 +62,4 @@ fn report(requirement: &Requirement<Cap>, held: &CapabilitySet<Cap>) {
     println!("satisfied: {}", result.satisfied());
     println!("missing:   {:?}", result.missing());
     println!("{result}");
-}
-
-/// Runs a sequence whose first step refuses to continue without the capabilities.
-fn colonize(requirement: Requirement<Cap>, held: CapabilitySet<Cap>) {
-    println!("\n== Colonizing ==");
-
-    // A name lets a stored rule reach state the capability vocabulary misses.
-    let mut checks = conditions::Checks::new();
-    checks.register(
-        "borrowed-fleet",
-        conditions::check("An ally lent us ships", |query: &QueryCtx<'_>| {
-            query
-                .service::<Empire>()
-                .is_some_and(|e| e.colony_ships > 0)
-        }),
-    );
-
-    let mut services = TypeMap::new();
-    services.insert(Empire { colony_ships: 0 });
-    services.insert(checks);
-    services.insert(held);
-
-    let mut library = Library::new();
-    let landing = library.insert(
-        Sequence::new("landing")
-            .with_step(steps::when(Requirement::not(requirement), steps::stop()))
-            .with_step(steps::run("Land the colony", |_ctx| {
-                println!("The first dome goes up.");
-            }))
-            // The colony itself grants a new capability.
-            .with_step(steps::ApplyEffects {
-                effects: vec![Box::new(effects::grant(Cap::ToxicHabitation))],
-            }),
-    );
-
-    let mut runner = Runner::default();
-    runner.start(landing, None).unwrap();
-    while runner.advance(&mut library, &mut services).is_pending() {}
-
-    let held = services.get::<CapabilitySet<Cap>>().unwrap();
-    println!("capabilities now: {:?}", held.iter().collect::<Vec<_>>());
 }

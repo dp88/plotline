@@ -12,7 +12,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
-# Do not build this crate with `panic = "abort"`.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -34,13 +33,10 @@ jobs:
       - run: cargo test --all-features --doc
       - run: cargo test --release --all-features --all-targets
       - run: cargo test --release --all-features --doc
-      - run: cargo run --example dialog
       - run: cargo run --example unlocks
       - run: cargo run --example techtree
 
-  # The `std` feature is a real boundary: without it the runner does not
-  # catch panics. Test both sides of it, and keep the bare-metal build that
-  # backs the `no_std` claim.
+  # The bare-metal build backs the `no_std` claim.
   no_std:
     name: no_std
     runs-on: ubuntu-latest
@@ -49,14 +45,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
-          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --no-default-features --all-targets
-      - run: cargo clippy --no-default-features --all-targets
       - name: Cross-compile to bare metal
-        run: cargo build --no-default-features --target thumbv7em-none-eabihf
+        run: cargo build --target thumbv7em-none-eabihf
       - name: Cross-compile to bare metal with serde
-        run: cargo build --no-default-features --features serde --target thumbv7em-none-eabihf
+        run: cargo build --features serde --target thumbv7em-none-eabihf
 
   lint:
     name: Format and lint

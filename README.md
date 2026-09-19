@@ -8,12 +8,9 @@
 ![MSRV](https://img.shields.io/badge/rust-1.85%2B-blue)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-Branching sequences of events as plain data — dialog, quests, cutscenes,
-tutorials — for any engine. The host defines the steps; `plotline` runs
-order, branches, subroutines, jumps, and waits.
-
-It also answers what gates those flows: does an entity hold what a thing
-demands, and if not, what is it short of?
+Capability requirements and unlock graphs as plain data, for any engine.
+`plotline` answers what gates authored content: does an entity hold what a
+thing demands, and if not, what is it short of?
 
 ## Quick start
 
@@ -21,44 +18,6 @@ demands, and if not, what is it short of?
 [dependencies]
 plotline = "0.3"
 ```
-
-```rust
-use core::task::Poll;
-use plotline::{Completion, Library, Outcome, Runner, Sequence, TypeMap, steps};
-
-let ready = Completion::new();
-let waiting_on = ready.clone();
-
-let mut library = Library::new();
-let farewell = library.insert(
-    Sequence::new("farewell")
-        .with_step(steps::run("Say goodbye", |_ctx| println!("Safe roads."))),
-);
-let greeting = library.insert(
-    Sequence::new("greeting")
-        .with_step(steps::run("Say hello", |_ctx| println!("Hello, traveler.")))
-        .with_step(steps::run("Wait for the world", move |_ctx| waiting_on.clone()))
-        .with_step(steps::Branch {
-            condition: None,
-            if_true: Some(farewell),
-            if_false: None,
-        }),
-);
-
-let mut runner = Runner::default();
-let mut services = TypeMap::new();
-runner.start(greeting, None).unwrap();
-
-assert_eq!(runner.advance(&mut library, &mut services), Poll::Pending);
-
-ready.signal();
-assert_eq!(
-    runner.advance(&mut library, &mut services),
-    Poll::Ready(Outcome::Finished),
-);
-```
-
-## Requirements
 
 A requirement is a rule held as data, over capability keys you define. The
 crate never interprets a key. It answers whether a set holds one, and
@@ -72,6 +31,7 @@ enum Cap {
     FrozenHabitation,
     HighGravityHabitation,
     Shipyard,
+    AlliedFleet,
 }
 
 let humans = CapabilitySet::from([Cap::FrozenHabitation, Cap::Shipyard]);
@@ -81,7 +41,7 @@ let deneb_iv = Requirement::all([
     Requirement::has(Cap::HighGravityHabitation),
     Requirement::any([
         Requirement::has(Cap::Shipyard),
-        Requirement::named("borrowed-fleet"),
+        Requirement::has(Cap::AlliedFleet),
     ]),
 ]);
 
@@ -90,10 +50,6 @@ assert!(!deneb_iv.satisfies(&humans));
 let result = deneb_iv.evaluate(&humans);
 assert_eq!(result.missing(), vec![Cap::HighGravityHabitation]);
 ```
-
-The same value is a `Condition`, so a `Branch` or `when` step can hold one.
-That path also reads chain flags and a `Checks` registry, which is how a
-rule loaded from a file calls a host closure by name.
 
 Use it for technology prerequisites, equipment requirements, habitability,
 crafting recipes, policies, dialogue choices, and skill unlocks.
@@ -133,37 +89,25 @@ content nothing can reach.
 
 ## Why
 
-- **Plain data.** A sequence is an ordered list of steps the host defines —
-  closures for the simple cases, structs where a step carries state.
 - **Rules you can read.** A `Requirement` clones, compares, prints, and
   serializes. Tools can walk it without running it.
+- **Answers that explain themselves.** An `Evaluation` prints as a ✓/✗ tree
+  and lists the conservative shortfall.
 - **Graphs you do not maintain.** An unlock graph is derived from the rules
   themselves, so it cannot disagree with them.
-- **Subroutines and jumps.** `Call` enters a subroutine and falling off its
-  end returns to the caller; `Return` exits early; `Goto` clears the whole
-  call chain before starting its target.
-- **No clock.** A waiting step returns a `Completion` handle. The host
-  signals it and calls `advance()`. The crate does not define timed waits.
-- **No engine or runtime dependencies.** `no_std` with `alloc`; the default
-  `std` feature adds panic isolation only.
-- **Tooling-ready.** Whole-library validation, per-step reference facts, and
-  reachability analysis feed editors and linters.
+- **No engine or runtime dependencies.** `no_std` with `alloc`.
 
 ## Requirements and features
 
 - Rust 1.85 or later, edition 2024.
 - `no_std` with `alloc`; no required dependencies.
-- `std` (default): catches panics in steps. It requires `panic = "unwind"`.
 - `serde` (off): derives `Serialize` and `Deserialize` for `Requirement`,
-  `CapabilitySet`, and `Evaluation`. It works without `std`.
-- `--no-default-features` builds without `std` and does not catch panics.
+  `CapabilitySet`, `Evaluation`, `Unlock`, and `Unlocks`. It works without
+  `std`.
 
 ## More examples and documentation
 
-- [API documentation](https://docs.rs/plotline) — rustdoc is the manual:
-  steps, built-ins, validation, analysis, and diagnostics.
-- [`examples/dialog.rs`](examples/dialog.rs) — a branching conversation.
-  Run it with `cargo run --example dialog`.
+- [API documentation](https://docs.rs/plotline) — rustdoc is the manual.
 - [`examples/unlocks.rs`](examples/unlocks.rs) — requirements gating what an
   empire can do. Run it with `cargo run --example unlocks`.
 - [`examples/techtree.rs`](examples/techtree.rs) — a technology tree drawn

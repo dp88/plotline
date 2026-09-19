@@ -3,11 +3,9 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::any::Any;
 use core::fmt::Debug;
 
 use crate::rules::{CapabilitySet, Evaluation, Requirement};
-use crate::vocab::Condition;
 
 /// One node: what it demands, and what it gives.
 ///
@@ -361,7 +359,7 @@ impl<I: Ord, K: Ord + Clone> Unlocks<I, K> {
     }
 }
 
-impl<I: Ord + Clone, K: Ord + Clone + Any + Debug> Unlocks<I, K> {
+impl<I: Ord + Clone, K: Ord + Clone> Unlocks<I, K> {
     /// Reports authoring problems.
     ///
     /// `external` holds the capabilities that other systems grant, such as a

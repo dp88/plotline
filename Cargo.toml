@@ -16,10 +16,7 @@ exclude = [".github/", "art/", "RELEASING.md", "deny.toml"]
 all-features = true
 
 [features]
-default = ["std"]
-# Enables panic isolation in the runner.
-std = []
-# Derives Serialize and Deserialize for the requirement data types.
+# Derives Serialize and Deserialize for the data types.
 serde = ["dep:serde"]
 
 [dependencies]

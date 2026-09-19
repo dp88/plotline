@@ -6,11 +6,7 @@ use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::any::Any;
 use core::fmt::{Debug, Display, Formatter, Result as FmtResult};
-
-use crate::conditions::Checks;
-use crate::vocab::{Condition, QueryCtx};
 
 /// The capabilities one entity holds.
 ///
@@ -137,17 +133,6 @@ impl<K> IntoIterator for CapabilitySet<K> {
     }
 }
 
-/// A capability key that cannot exist.
-///
-/// Use it through [`Rule`] when a requirement tree holds flags and named
-/// checks but no capabilities.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Nothing {}
-
-/// A requirement with no capability leaves.
-pub type Rule = Requirement<Nothing>;
-
 /// A requirement over capability keys, held as data.
 ///
 /// The crate never interprets a key. It only asks whether a
@@ -165,19 +150,7 @@ pub type Rule = Requirement<Nothing>;
 /// | `at_least(n, items)` where `n > items.len()` | false |
 ///
 /// These follow ordinary boolean and set conventions, so no case returns an
-/// error. [`Condition::warning`] reports the traps at author time.
-///
-/// # Two ways to evaluate
-///
-/// [`Requirement::evaluate`] takes only a capability set. It is pure, needs no
-/// runner, and suits a user interface or a planner. [`Requirement::Flag`] and
-/// [`Requirement::Named`] have no meaning there, so both read as false.
-///
-/// `Requirement` also implements [`Condition`], so a
-/// [`Branch`](crate::steps::Branch) or [`when`](crate::steps::when) step can
-/// hold one. That path reads chain flags and the [`Checks`] registry, so every
-/// leaf works. Call [`Requirement::satisfies_in`] for it, because the inherent
-/// [`Requirement::evaluate`] shadows [`Condition::evaluate`].
+/// error. [`Requirement::warning`] reports the traps at author time.
 ///
 /// ```
 /// use plotline::{CapabilitySet, Requirement};
@@ -217,16 +190,6 @@ pub enum Requirement<K> {
         /// The requirements to count.
         requirements: Vec<Requirement<K>>,
     },
-    /// A chain flag has this value. Outside a chain it reads false.
-    Flag {
-        /// The flag name.
-        name: String,
-        /// The value the flag must have.
-        expected: bool,
-    },
-    /// A condition registered in a [`Checks`] registry. An unregistered name
-    /// reads false.
-    Named(String),
 }
 
 impl<K> Requirement<K> {
@@ -267,60 +230,44 @@ impl<K> Requirement<K> {
         }
     }
 
-    /// Requires a set chain flag.
+    /// Returns an authoring warning, if any.
+    ///
+    /// A warning marks a rule that is legal but almost certainly a mistake,
+    /// such as an empty `Any`, which never holds. Nested warnings name the
+    /// position of the offending child.
     #[must_use]
-    pub fn flag(name: impl Into<String>) -> Self {
-        Self::Flag {
-            name: name.into(),
-            expected: true,
-        }
-    }
-
-    /// Requires a clear chain flag.
-    #[must_use]
-    pub fn flag_clear(name: impl Into<String>) -> Self {
-        Self::Flag {
-            name: name.into(),
-            expected: false,
-        }
-    }
-
-    /// Requires a condition registered in a [`Checks`] registry.
-    #[must_use]
-    pub fn named(name: impl Into<String>) -> Self {
-        Self::Named(name.into())
-    }
-
-    /// Returns every check name this requirement uses that `checks` does not
-    /// hold. Use it to validate rules loaded from a file.
-    #[must_use]
-    pub fn unknown_checks(&self, checks: &Checks) -> Vec<String> {
-        let mut names = Vec::new();
-        self.collect_unknown_checks(checks, &mut names);
-        names
-    }
-
-    fn collect_unknown_checks(&self, checks: &Checks, names: &mut Vec<String>) {
+    pub fn warning(&self) -> Option<String> {
         match self {
-            Self::Named(name) => {
-                if checks.get(name).is_none() {
-                    names.push(name.clone());
-                }
-            }
-            Self::All(items)
-            | Self::Any(items)
-            | Self::AtLeast {
-                requirements: items,
-                ..
+            Self::Has(_) => None,
+            Self::Any(items) if items.is_empty() => Some("An empty Any never holds.".to_owned()),
+            Self::All(items) | Self::Any(items) => first_child_warning(items),
+            Self::Not(inner) => inner
+                .warning()
+                .map(|warning| format!("Inner requirement: {warning}")),
+            Self::AtLeast {
+                count,
+                requirements,
             } => {
-                for item in items {
-                    item.collect_unknown_checks(checks, names);
+                if *count == 0 {
+                    Some("At least 0 always holds.".to_owned())
+                } else if *count > requirements.len() {
+                    Some(format!(
+                        "Requires {count} of {}; it can never hold.",
+                        requirements.len()
+                    ))
+                } else {
+                    first_child_warning(requirements)
                 }
             }
-            Self::Not(inner) => inner.collect_unknown_checks(checks, names),
-            Self::Has(_) | Self::Flag { .. } => {}
         }
     }
+}
+
+fn first_child_warning<K>(items: &[Requirement<K>]) -> Option<String> {
+    items.iter().enumerate().find_map(|(index, item)| {
+        item.warning()
+            .map(|warning| format!("Requirement {index}: {warning}"))
+    })
 }
 
 impl<K: Ord + Clone> Requirement<K> {
@@ -388,8 +335,8 @@ impl<K: Ord + Clone> Requirement<K> {
                     item.collect_edges(sets, true);
                 }
             }
-            // Not forbids rather than demands, and a flag is not a capability.
-            Self::Not(_) | Self::Flag { .. } | Self::Named(_) => {}
+            // Not forbids rather than demands.
+            Self::Not(_) => {}
         }
     }
 }
@@ -397,30 +344,28 @@ impl<K: Ord + Clone> Requirement<K> {
 impl<K: Ord> Requirement<K> {
     /// Returns whether the capability set satisfies this requirement.
     ///
-    /// [`Requirement::Flag`] and [`Requirement::Named`] read as false. This
-    /// call allocates nothing and stops at the first decisive child.
+    /// This call allocates nothing and stops at the first decisive child.
     #[must_use]
     pub fn satisfies(&self, capabilities: &CapabilitySet<K>) -> bool {
-        self.check(&SetOnly(capabilities))
-    }
-
-    /// Returns whether a step context satisfies this requirement.
-    ///
-    /// Unlike [`Requirement::satisfies`], this reads chain flags and the
-    /// [`Checks`] registry, so every leaf works. It is the same answer as
-    /// [`Condition::evaluate`], under a name that the inherent
-    /// [`Requirement::evaluate`] does not shadow.
-    #[must_use]
-    pub fn satisfies_in(&self, query: &QueryCtx<'_>) -> bool
-    where
-        K: Any,
-    {
-        self.check(&FromQuery(query))
+        match self {
+            Self::Has(key) => capabilities.contains(key),
+            Self::All(items) => items.iter().all(|item| item.satisfies(capabilities)),
+            Self::Any(items) => items.iter().any(|item| item.satisfies(capabilities)),
+            Self::Not(inner) => !inner.satisfies(capabilities),
+            Self::AtLeast {
+                count,
+                requirements,
+            } => {
+                requirements
+                    .iter()
+                    .filter(|item| item.satisfies(capabilities))
+                    .count()
+                    >= *count
+            }
+        }
     }
 
     /// Evaluates the requirement and returns the full result tree.
-    ///
-    /// [`Requirement::Flag`] and [`Requirement::Named`] read as false.
     #[must_use]
     pub fn evaluate(&self, capabilities: &CapabilitySet<K>) -> Evaluation<K>
     where
@@ -465,14 +410,6 @@ impl<K: Ord> Requirement<K> {
                     children,
                 }
             }
-            Self::Flag { name, expected } => Evaluation::Opaque {
-                summary: flag_summary(name, *expected),
-                satisfied: !*expected,
-            },
-            Self::Named(name) => Evaluation::Opaque {
-                summary: format!("Check '{name}'"),
-                satisfied: false,
-            },
         }
     }
 
@@ -485,133 +422,6 @@ impl<K: Ord> Requirement<K> {
             .map(|item| item.evaluate(capabilities))
             .collect()
     }
-
-    fn check(&self, resolver: &dyn Resolver<K>) -> bool {
-        match self {
-            Self::Has(key) => resolver.has(key),
-            Self::All(items) => items.iter().all(|item| item.check(resolver)),
-            Self::Any(items) => items.iter().any(|item| item.check(resolver)),
-            Self::Not(inner) => !inner.check(resolver),
-            Self::AtLeast {
-                count,
-                requirements,
-            } => requirements.iter().filter(|r| r.check(resolver)).count() >= *count,
-            Self::Flag { name, expected } => resolver.flag(name) == *expected,
-            Self::Named(name) => resolver.named(name),
-        }
-    }
-}
-
-fn flag_summary(name: &str, expected: bool) -> String {
-    format!("Flag '{name}' is {expected}")
-}
-
-/// Answers the leaf questions for one boolean evaluation.
-trait Resolver<K> {
-    fn has(&self, key: &K) -> bool;
-    fn flag(&self, name: &str) -> bool;
-    fn named(&self, name: &str) -> bool;
-}
-
-/// Resolves against a capability set alone.
-struct SetOnly<'a, K>(&'a CapabilitySet<K>);
-
-impl<K: Ord> Resolver<K> for SetOnly<'_, K> {
-    fn has(&self, key: &K) -> bool {
-        self.0.contains(key)
-    }
-
-    fn flag(&self, _name: &str) -> bool {
-        false
-    }
-
-    fn named(&self, _name: &str) -> bool {
-        false
-    }
-}
-
-/// Resolves against a full step context.
-struct FromQuery<'a, 'b>(&'a QueryCtx<'b>);
-
-impl<K: Ord + Any> Resolver<K> for FromQuery<'_, '_> {
-    fn has(&self, key: &K) -> bool {
-        self.0
-            .service::<CapabilitySet<K>>()
-            .is_some_and(|caps| caps.contains(key))
-    }
-
-    fn flag(&self, name: &str) -> bool {
-        self.0.chain.is_some_and(|chain| chain.flag(name))
-    }
-
-    fn named(&self, name: &str) -> bool {
-        self.0
-            .service::<Checks>()
-            .and_then(|checks| checks.get(name))
-            .is_some_and(|condition| condition.evaluate(self.0))
-    }
-}
-
-impl<K: Ord + Any + Debug> Condition for Requirement<K> {
-    fn summary(&self) -> String {
-        match self {
-            Self::Has(key) => format!("Has {key:?}"),
-            Self::All(items) => format!("All of {}", items.len()),
-            Self::Any(items) => format!("Any of {}", items.len()),
-            Self::Not(inner) => format!("Not ({})", inner.summary()),
-            Self::AtLeast {
-                count,
-                requirements,
-            } => format!("At least {count} of {}", requirements.len()),
-            Self::Flag { name, expected } => flag_summary(name, *expected),
-            Self::Named(name) => format!("Check '{name}'"),
-        }
-    }
-
-    fn warning(&self) -> Option<String> {
-        match self {
-            Self::Has(_) => None,
-            Self::Any(items) if items.is_empty() => Some("An empty Any never holds.".to_owned()),
-            Self::All(items) | Self::Any(items) => first_child_warning(items),
-            Self::Not(inner) => inner
-                .warning()
-                .map(|warning| format!("Inner requirement: {warning}")),
-            Self::AtLeast {
-                count,
-                requirements,
-            } => {
-                if *count == 0 {
-                    Some("At least 0 always holds.".to_owned())
-                } else if *count > requirements.len() {
-                    Some(format!(
-                        "Requires {count} of {}; it can never hold.",
-                        requirements.len()
-                    ))
-                } else {
-                    first_child_warning(requirements)
-                }
-            }
-            Self::Flag { name, .. } => name
-                .trim()
-                .is_empty()
-                .then(|| "No flag name set.".to_owned()),
-            Self::Named(name) => name
-                .trim()
-                .is_empty()
-                .then(|| "No check name set.".to_owned()),
-        }
-    }
-
-    fn evaluate(&self, query: &QueryCtx<'_>) -> bool {
-        self.satisfies_in(query)
-    }
-}
-
-fn first_child_warning<K: Ord + Any + Debug>(items: &[Requirement<K>]) -> Option<String> {
-    items.iter().enumerate().find_map(|(index, item)| {
-        item.warning()
-            .map(|warning| format!("Requirement {index}: {warning}"))
-    })
 }
 
 /// The result of evaluating a [`Requirement`].
@@ -684,13 +494,6 @@ pub enum Evaluation<K> {
         /// One result per child requirement.
         children: Vec<Evaluation<K>>,
     },
-    /// A leaf with no capability key, such as a flag or a named check.
-    Opaque {
-        /// A display summary of the leaf.
-        summary: String,
-        /// Whether the leaf held.
-        satisfied: bool,
-    },
 }
 
 impl<K> Evaluation<K> {
@@ -702,8 +505,7 @@ impl<K> Evaluation<K> {
             | Self::All { satisfied, .. }
             | Self::Any { satisfied, .. }
             | Self::Not { satisfied, .. }
-            | Self::AtLeast { satisfied, .. }
-            | Self::Opaque { satisfied, .. } => *satisfied,
+            | Self::AtLeast { satisfied, .. } => *satisfied,
         }
     }
 
@@ -715,7 +517,7 @@ impl<K> Evaluation<K> {
             | Self::Any { children, .. }
             | Self::AtLeast { children, .. } => children,
             Self::Not { child, .. } => core::slice::from_ref(child),
-            Self::Has { .. } | Self::Opaque { .. } => &[],
+            Self::Has { .. } => &[],
         }
     }
 }
@@ -790,7 +592,6 @@ impl<K: Debug> Evaluation<K> {
                 children,
                 ..
             } => write!(f, "At least {count} of {}, {met} met", children.len())?,
-            Self::Opaque { summary, .. } => write!(f, "{summary}")?,
         }
         for child in self.children() {
             writeln!(f)?;
@@ -806,8 +607,6 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use crate::conditions::check;
-    use crate::context::{ChainFlags, TypeMap};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum Tech {
@@ -934,9 +733,6 @@ mod tests {
                 ]),
                 true,
             ),
-            (&[], Requirement::flag("accepted"), false),
-            (&[], Requirement::flag_clear("accepted"), true),
-            (&[], Requirement::named("anything"), false),
         ];
 
         for (held, rule, expect) in cases {
@@ -1038,74 +834,18 @@ mod tests {
             Requirement::has(A),
             Requirement::not(Requirement::has(B)),
             Requirement::at_least(1, [Requirement::has(C)]),
-            Requirement::flag("at-war"),
         ]);
         let drawn = rule.evaluate(&caps(&[A])).to_string();
         assert_eq!(
             drawn,
             "\
-✗ All of 4
+✗ All of 3
   ✓ Has A
   ✓ Not
     ✗ Has B
   ✗ At least 1 of 1, 0 met
-    ✗ Has C
-  ✗ Flag 'at-war' is true"
+    ✗ Has C"
         );
-    }
-
-    #[test]
-    fn unknown_checks_finds_unregistered_names() {
-        let mut checks = Checks::new();
-        checks.register("known", check("Known", |_query| true));
-
-        let rule = Requirement::<Tech>::all([
-            Requirement::named("known"),
-            Requirement::not(Requirement::named("missing")),
-        ]);
-        assert_eq!(rule.unknown_checks(&checks), vec!["missing".to_owned()]);
-    }
-
-    #[test]
-    fn the_context_path_reads_capabilities_flags_and_checks() {
-        let mut services = TypeMap::new();
-        services.insert(caps(&[A]));
-        let mut checks = Checks::new();
-        checks.register("always", check("Always true", |_query| true));
-        services.insert(checks);
-
-        let mut chain = ChainFlags::new();
-        chain.set_flag("accepted", true);
-        let query = QueryCtx {
-            target: None,
-            chain: Some(&chain),
-            caps: &services,
-        };
-
-        let rule = Requirement::all([
-            Requirement::has(A),
-            Requirement::flag("accepted"),
-            Requirement::named("always"),
-        ]);
-        assert!(rule.satisfies_in(&query));
-        assert!(!Requirement::<Tech>::named("absent").satisfies_in(&query));
-        assert!(!Requirement::has(B).satisfies_in(&query));
-    }
-
-    #[test]
-    fn summaries_describe_each_node() {
-        assert_eq!(Requirement::has(A).summary(), "Has A");
-        assert_eq!(Requirement::<Tech>::all([]).summary(), "All of 0");
-        assert_eq!(
-            Requirement::not(Requirement::has(A)).summary(),
-            "Not (Has A)"
-        );
-        assert_eq!(
-            Requirement::at_least(1, [Requirement::has(A)]).summary(),
-            "At least 1 of 1"
-        );
-        assert_eq!(Rule::named("x").summary(), "Check 'x'");
-        assert_eq!(Rule::flag("x").summary(), "Flag 'x' is true");
     }
 
     #[test]
@@ -1122,14 +862,12 @@ mod tests {
                 .warning()
                 .is_some()
         );
-        assert!(Rule::flag("").warning().is_some());
-        assert!(Rule::named("  ").warning().is_some());
         assert!(Requirement::has(A).warning().is_none());
     }
 
     #[test]
     fn warnings_name_the_offending_child() {
-        let rule = Requirement::all([Requirement::has(A), Requirement::flag("")]);
+        let rule = Requirement::all([Requirement::has(A), Requirement::any([])]);
         assert!(rule.warning().unwrap().starts_with("Requirement 1:"));
 
         let nested = Requirement::not(Requirement::<Tech>::any([]));

@@ -1,7 +1,7 @@
 //! Rules survive a trip through a data file.
 #![cfg(feature = "serde")]
 
-use plotline::{CapabilitySet, Evaluation, Requirement, Rule, Unlock, Unlocks};
+use plotline::{CapabilitySet, Evaluation, Requirement, Unlock, Unlocks};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -21,8 +21,8 @@ fn cruiser() -> Requirement<Tech> {
         Requirement::at_least(
             1,
             [
-                Requirement::flag("at-war"),
-                Requirement::named("has-shipyard"),
+                Requirement::has(Tech::Warp),
+                Requirement::has(Tech::Cloaking),
             ],
         ),
     ])
@@ -57,8 +57,8 @@ fn a_hand_written_document_loads() {
     {
       "All": [
         { "Has": "Fusion" },
-        { "Any": [{ "Has": "Warp" }, { "Named": "wormhole-access" }] },
-        { "Flag": { "name": "at-war", "expected": false } },
+        { "Any": [{ "Has": "Warp" }, { "Has": "Cloaking" }] },
+        { "Not": { "Has": "Warp" } },
         { "AtLeast": { "count": 1, "requirements": [{ "Has": "Cloaking" }] } }
       ]
     }
@@ -71,14 +71,15 @@ fn a_hand_written_document_loads() {
             Requirement::has(Tech::Fusion),
             Requirement::any([
                 Requirement::has(Tech::Warp),
-                Requirement::named("wormhole-access"),
+                Requirement::has(Tech::Cloaking),
             ]),
-            Requirement::flag_clear("at-war"),
+            Requirement::not(Requirement::has(Tech::Warp)),
             Requirement::at_least(1, [Requirement::has(Tech::Cloaking)]),
         ])
     );
 
-    assert!(rule.satisfies(&CapabilitySet::from([
+    assert!(rule.satisfies(&CapabilitySet::from([Tech::Fusion, Tech::Cloaking])));
+    assert!(!rule.satisfies(&CapabilitySet::from([
         Tech::Fusion,
         Tech::Warp,
         Tech::Cloaking
@@ -121,19 +122,6 @@ fn an_evaluation_round_trips() {
 }
 
 #[test]
-fn a_rule_without_capabilities_round_trips() {
-    let rule = Rule::all([
-        Rule::flag("met-the-elder"),
-        Rule::not(Rule::flag("refused-the-quest")),
-        Rule::named("carries-the-ring"),
-    ]);
-
-    let encoded = serde_json::to_string(&rule).unwrap();
-    let decoded: Rule = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(decoded, rule);
-}
-
-#[test]
 fn a_whole_tree_round_trips() {
     let mut tree = Unlocks::new();
     tree.insert("fusion-power", Unlock::free().granting([Tech::Fusion]));
@@ -145,7 +133,7 @@ fn a_whole_tree_round_trips() {
         "cloaking-field",
         Unlock::new(Requirement::any([
             Requirement::has(Tech::Warp),
-            Requirement::named("salvaged-hull"),
+            Requirement::has(Tech::Fusion),
         ]))
         .granting([Tech::Cloaking]),
     );
