@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-18
+
 A rebuild around one idea: a step is data. The runner walks the steps and
 hands each action to the host, and the host answers. The public surface
 drops from 66 items, 7 traits, and 3 modules to 19 items and 1 trait.
