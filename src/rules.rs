@@ -285,12 +285,17 @@ impl<K> Requirement<K> {
                 count,
                 requirements,
             } => {
-                requirements
-                    .iter()
-                    .filter(|item| item.satisfies(holder))
-                    .take(*count)
-                    .count()
-                    >= *count
+                let mut met = 0;
+                for (index, item) in requirements.iter().enumerate() {
+                    let left = requirements.len() - index;
+                    if met >= *count || met + left < *count {
+                        break;
+                    }
+                    if item.satisfies(holder) {
+                        met += 1;
+                    }
+                }
+                met >= *count
             }
         }
     }
