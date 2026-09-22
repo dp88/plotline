@@ -19,7 +19,7 @@ code. Your code performs the action and answers, and the runner moves on.
 
 ```toml
 [dependencies]
-plotline = "0.4"
+plotline = "0.3"
 ```
 
 ```rust
